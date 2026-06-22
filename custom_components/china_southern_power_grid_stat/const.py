@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from .csg_client import LoginType
 
-DOMAIN = "china_southern_power_grid_stat"
+DOMAIN = "china_southern_power_grid_stat GDJM"
 
 # config flow
 # main account (phone number)
