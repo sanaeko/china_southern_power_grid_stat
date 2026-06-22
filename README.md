@@ -1,9 +1,9 @@
-# China Southern Power Grid Statistics
+# China Southern Power Grid Statistics GDJM
 
 # 南方电网电费数据HA集成
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/cubicpill/china_southern_power_grid_stat)](https://github.com/CubicPill/china_southern_power_grid_stat/releases)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/sanaeko/china_southern_power_grid_stat)](https://github.com/sanaeko/china_southern_power_grid_stat/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ## 支持功能
@@ -35,23 +35,23 @@
 ❌因为南网登录API调整，不再支持登录态失效之后自动重新登录，需要手动重新登录。
 ## 使用方法
 
-使用[HACS](https://hacs.xyz/)或[手动下载安装](https://github.com/CubicPill/china_southern_power_grid_stat/releases)
+使用[HACS](https://hacs.xyz/)或[手动下载安装](https://github.com/sanaeko/china_southern_power_grid_stat/releases)
 
-注意：本集成需求`Home Assistant`最低版本为`2022.11`。
+注意：本集成需求`Home Assistant`最低版本为`2026.6`。
 
 ### 配置界面
 
 支持的登录方式
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_login.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/sanaeko/china_southern_power_grid_stat/master/img/setup_login.png" alt="" style="width: 400px;">
 
 配置界面
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_add_account.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/sanaeko/china_southern_power_grid_stat/master/img/setup_add_account.png" alt="" style="width: 400px;">
 
 添加缴费号
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_select_account.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/sanaeko/china_southern_power_grid_stat/master/img/setup_select_account.png" alt="" style="width: 400px;">
 
 传感器列表
 - 余额
@@ -76,11 +76,11 @@
 
 传感器额外参数（每月用量、每日用量）
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/sensor_attr.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/sanaeko/china_southern_power_grid_stat/master/img/sensor_attr.png" alt="" style="width: 400px;">
 
 参数设置
 
-<img src="https://raw.githubusercontent.com/CubicPill/china_southern_power_grid_stat/master/img/setup_params.png" alt="" style="width: 400px;">
+<img src="https://raw.githubusercontent.com/sanaeko/china_southern_power_grid_stat/master/img/setup_params.png" alt="" style="width: 400px;">
 
 ### 数据更新策略
 
@@ -132,12 +132,12 @@
 
 ### API 实现库
 
-本项目代码中的[`csg_client/__init__.py`](https://github.com/CubicPill/china_southern_power_grid_stat/blob/master/custom_components/china_southern_power_grid_stat/csg_client/__init__.py)
+本项目代码中的[`csg_client/__init__.py`](https://github.com/sanaeko/china_southern_power_grid_stat/blob/master/custom_components/china_southern_power_grid_stat/csg_client/__init__.py)
 是对南网在线 App API 的实现，可以独立于此项目单独使用。
 详细使用方法见`csg_client_demo.py`
 
 ## Thank you
-- [lyylyylyylyy](https://github.com/lyylyylyylyy): PR [#30](https://github.com/CubicPill/china_southern_power_grid_stat/pull/30) 短信验证码登录支持
+- [lyylyylyylyy](https://github.com/lyylyylyylyy): PR [#30](https://github.com/sanaeko/china_southern_power_grid_stat/pull/30) 短信验证码登录支持
 
 感谢[瀚思彼岸](https://bbs.hassbian.com/)论坛以下帖子作者的辛苦付出，排名不分先后
 
