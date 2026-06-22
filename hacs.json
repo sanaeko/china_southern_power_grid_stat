@@ -1,6 +1,6 @@
 {
-  "name": "China Southern Power Grid Statistics",
+  "name": "China Southern Power Grid Statistics GDJM",
   "render_readme": true,
   "country": "CN",
-  "homeassistant": "2022.11"
+  "homeassistant": "2026.6"
 }

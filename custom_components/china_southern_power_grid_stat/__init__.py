@@ -42,12 +42,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_AUTH_TOKEN: entry.data[CONF_AUTH_TOKEN],
         }
     )
-    if not await hass.async_add_executor_job(client.verify_login):
-        raise ConfigEntryAuthFailed("Login expired")
+    if not await hass.async_add_executor_job(
+        client.verify_login
+    ):
+        raise ConfigEntryAuthFailed(
+            "Login expired"
+        )
 
-    hass.data[DOMAIN][entry.entry_id] = {}
+    await hass.async_add_executor_job(
+        client.initialize
+    )
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    hass.data[DOMAIN][entry.entry_id] = {
+        "client": client
+    }
+
+    await hass.config_entries.async_forward_entry_setups(
+        entry,
+        PLATFORMS
+    )
+
+    # hass.data[DOMAIN][entry.entry_id] = {}
+
+    # await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
 
