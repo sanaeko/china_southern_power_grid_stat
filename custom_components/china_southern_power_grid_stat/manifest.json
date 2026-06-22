@@ -1,5 +1,5 @@
 {
-  "domain": "china_southern_power_grid_stat GDJM",
+  "domain": "china_southern_power_grid_stat_GDJM",
   "name": "China Southern Power Grid Statistics GDJM",
   "codeowners": [
     "@sanaeko",
