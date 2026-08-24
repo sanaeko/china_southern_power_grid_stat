@@ -21,6 +21,7 @@ from homeassistant.const import CONF_USERNAME, STATE_UNAVAILABLE, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -61,6 +62,9 @@ from .const import (
     SUFFIX_THIS_YEAR_COST,
     SUFFIX_THIS_YEAR_KWH,
     SUFFIX_YESTERDAY_KWH,
+    ATTR_KEY_DAILY_USAGE_HISTORY,
+    DAILY_USAGE_HISTORY_MAX_DAYS,
+    SUFFIX_DAILY_USAGE_HISTORY,
 )
 from .csg_client import (
     JSON_KEY_METERING_POINT_NUMBER,
@@ -186,6 +190,10 @@ async def async_setup_entry(
                 ele_account_number,
                 SUFFIX_LAST_MONTH_COST,
                 extra_state_attributes_key=ATTR_KEY_LAST_MONTH_BY_DAY,
+            ),
+            CSGDailyUsageHistorySensor(
+                coordinator,
+                ele_account_number,
             ),
         ]
 
@@ -315,6 +323,51 @@ class CSGEnergySensor(CSGBaseSensor):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:lightning-bolt"
 
+class CSGDailyUsageHistorySensor(CSGBaseSensor):
+    """Daily electricity usage history."""
+
+    _attr_icon = "mdi:chart-line"
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        account_number: str,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            account_number,
+            SUFFIX_DAILY_USAGE_HISTORY,
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle coordinator update."""
+        history = self._coordinator._daily_usage_history.get(
+            self._account_number,
+            {},
+        )
+
+        if not history:
+            self._attr_available = False
+            self.async_write_ha_state()
+            return
+
+        self._attr_available = True
+
+        latest_date = max(history)
+
+        self._attr_native_value = history[latest_date]
+
+        self._attr_extra_state_attributes = {
+            ATTR_KEY_DAILY_USAGE_HISTORY: dict(
+                sorted(history.items())
+            )
+        }
+
+        self.async_write_ha_state()
 
 class CSGCostSensor(CSGBaseSensor):
     """Representation of a CSG Cost Sensor."""
@@ -358,6 +411,15 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._last_month_ym = None
         self._this_month_update_completed_flag = asyncio.Event()
         self._gathered_data = {}
+
+        self._daily_usage_store = Store(
+            hass,
+            1,
+            f"{DOMAIN}.daily_usage",
+        )
+
+        self._daily_usage_history: dict[str, dict[str, float]] = {}
+        self._daily_usage_store_loaded = False
 
     async def _async_refresh_client(self):
         """Refresh the client, update the user data.
@@ -674,6 +736,11 @@ class CSGCoordinator(DataUpdateCoordinator):
             kwh_from_cost=this_month_kwh_from_cost,
         )
 
+        await self._async_update_daily_usage_history(
+            account.account_number,
+            this_month_by_day,
+        )
+
         if this_month_by_day == STATE_UNAVAILABLE:
             # need last month's data to update `latest_day` entity
             self._if_update_last_month = True
@@ -699,6 +766,36 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._gathered_data[account.account_number][
             ATTR_KEY_CURRENT_LADDER_START_DATE
         ] = {ATTR_KEY_CURRENT_LADDER_START_DATE: ladder_start_date}
+
+        this_month_history = self._gathered_data[account.account_number].get(
+            ATTR_KEY_THIS_MONTH_BY_DAY
+        )
+
+        if isinstance(this_month_history, dict):
+            this_month_history = this_month_history.get(
+                ATTR_KEY_THIS_MONTH_BY_DAY
+            )
+
+        if isinstance(this_month_history, list):
+            await self._async_update_daily_usage_history(
+                account.account_number,
+                this_month_history,
+            )
+
+        last_month_history = self._gathered_data[account.account_number].get(
+            ATTR_KEY_LAST_MONTH_BY_DAY
+        )
+
+        if isinstance(last_month_history, dict):
+            last_month_history = last_month_history.get(
+                ATTR_KEY_LAST_MONTH_BY_DAY
+            )
+
+        if isinstance(last_month_history, list):
+            await self._async_update_daily_usage_history(
+                account.account_number,
+                last_month_history,
+            )
 
         self._this_month_update_completed_flag.set()
 
@@ -952,6 +1049,8 @@ class CSGCoordinator(DataUpdateCoordinator):
         This is the place to pre-process the data to lookup tables
         so entities can quickly look up their data.
         """
+        await self._async_load_daily_usage_history()
+
         self.update_interval = timedelta(
             seconds=self._config[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
         )
@@ -1002,3 +1101,56 @@ class CSGCoordinator(DataUpdateCoordinator):
             DATA_KEY_LAST_UPDATE_DAY
         ] = self._this_day
         return self._gathered_data
+    
+    async def _async_load_daily_usage_history(self) -> None:
+        """Load daily usage history from Home Assistant storage."""
+        if self._daily_usage_store_loaded:
+            return
+
+        data = await self._daily_usage_store.async_load()
+
+        if isinstance(data, dict):
+            self._daily_usage_history = data
+        else:
+            self._daily_usage_history = {}
+
+        self._daily_usage_store_loaded = True
+
+
+    async def _async_update_daily_usage_history(
+        self,
+        account_number: str,
+        daily_data: list[dict[str, str | float]],
+    ) -> None:
+        """Update persistent daily usage history."""
+        history = self._daily_usage_history.setdefault(account_number, {})
+
+        changed = False
+
+        for item in daily_data:
+            date = item.get(WF_ATTR_DATE)
+            kwh = item.get(WF_ATTR_KWH)
+
+            if date is None or kwh is None:
+                continue
+
+            date = str(date)
+            kwh = float(kwh)
+
+            if history.get(date) != kwh:
+                history[date] = kwh
+                changed = True
+
+        if not changed:
+            return
+
+        # Keep only the latest 730 days.
+        sorted_dates = sorted(history)
+
+        if len(sorted_dates) > DAILY_USAGE_HISTORY_MAX_DAYS:
+            for date in sorted_dates[:-DAILY_USAGE_HISTORY_MAX_DAYS]:
+                del history[date]
+
+        await self._daily_usage_store.async_save(
+            self._daily_usage_history
+        )
