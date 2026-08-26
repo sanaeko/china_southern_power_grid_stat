@@ -340,7 +340,6 @@ class CSGDailyUsageHistorySensor(CSGBaseSensor):
             coordinator,
             account_number,
             SUFFIX_DAILY_USAGE_HISTORY,
-            extra_state_attributes_key=ATTR_KEY_DAILY_USAGE_HISTORY,
         )
 
     @callback
@@ -737,6 +736,11 @@ class CSGCoordinator(DataUpdateCoordinator):
             kwh_from_cost=this_month_kwh_from_cost,
         )
 
+        await self._async_update_daily_usage_history(
+            account.account_number,
+            this_month_by_day,
+        )
+
         if this_month_by_day == STATE_UNAVAILABLE:
             # need last month's data to update `latest_day` entity
             self._if_update_last_month = True
@@ -762,6 +766,36 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._gathered_data[account.account_number][
             ATTR_KEY_CURRENT_LADDER_START_DATE
         ] = {ATTR_KEY_CURRENT_LADDER_START_DATE: ladder_start_date}
+
+        this_month_history = self._gathered_data[account.account_number].get(
+            ATTR_KEY_THIS_MONTH_BY_DAY
+        )
+
+        if isinstance(this_month_history, dict):
+            this_month_history = this_month_history.get(
+                ATTR_KEY_THIS_MONTH_BY_DAY
+            )
+
+        if isinstance(this_month_history, list):
+            await self._async_update_daily_usage_history(
+                account.account_number,
+                this_month_history,
+            )
+
+        last_month_history = self._gathered_data[account.account_number].get(
+            ATTR_KEY_LAST_MONTH_BY_DAY
+        )
+
+        if isinstance(last_month_history, dict):
+            last_month_history = last_month_history.get(
+                ATTR_KEY_LAST_MONTH_BY_DAY
+            )
+
+        if isinstance(last_month_history, list):
+            await self._async_update_daily_usage_history(
+                account.account_number,
+                last_month_history,
+            )
 
         self._this_month_update_completed_flag.set()
 
@@ -994,60 +1028,6 @@ class CSGCoordinator(DataUpdateCoordinator):
             self._async_update_last_month_stats(account),
             return_exceptions=True,
         )
-
-        # Update persistent daily usage history after
-        # both this-month and last-month data are ready.
-        account_data = self._gathered_data[account.account_number]
-
-        this_month_data = account_data.get(
-            ATTR_KEY_THIS_MONTH_BY_DAY
-        )
-
-        if isinstance(this_month_data, dict):
-            this_month_data = this_month_data.get(
-                ATTR_KEY_THIS_MONTH_BY_DAY
-            )
-
-        await self._async_update_daily_usage_history(
-            account.account_number,
-            this_month_data,
-        )
-
-        last_month_data = account_data.get(
-            ATTR_KEY_LAST_MONTH_BY_DAY
-        )
-
-        if isinstance(last_month_data, dict):
-            last_month_data = last_month_data.get(
-                ATTR_KEY_LAST_MONTH_BY_DAY
-            )
-
-        await self._async_update_daily_usage_history(
-            account.account_number,
-            last_month_data,
-        )
-
-        # Put the persistent history into coordinator data
-        # so the history sensor can read it.
-        history = self._daily_usage_history.get(
-            account.account_number,
-            {}
-        )
-
-        if history:
-            latest_date = max(history)
-            latest_kwh = history[latest_date]
-        else:
-            latest_kwh = STATE_UNAVAILABLE
-
-        account_data[SUFFIX_DAILY_USAGE_HISTORY] = latest_kwh
-
-        account_data[ATTR_KEY_DAILY_USAGE_HISTORY] = {
-            ATTR_KEY_DAILY_USAGE_HISTORY: dict(
-                sorted(history.items())
-            )
-        }
-
         try:
             self._update_latest_day(account)
         except Exception as exc:  # pylint: disable=broad-except
@@ -1140,30 +1120,14 @@ class CSGCoordinator(DataUpdateCoordinator):
     async def _async_update_daily_usage_history(
         self,
         account_number: str,
-        daily_data: list[dict[str, str | float]] | str,
+        daily_data: list[dict[str, str | float]],
     ) -> None:
         """Update persistent daily usage history."""
-
-        if daily_data in (
-            STATE_UNAVAILABLE,
-            STATE_UPDATE_UNCHANGED,
-        ):
-            return
-
-        if not isinstance(daily_data, list):
-            return
-
-        history = self._daily_usage_history.setdefault(
-            account_number,
-            {},
-        )
+        history = self._daily_usage_history.setdefault(account_number, {})
 
         changed = False
 
         for item in daily_data:
-            if not isinstance(item, dict):
-                continue
-
             date = item.get(WF_ATTR_DATE)
             kwh = item.get(WF_ATTR_KWH)
 
@@ -1180,7 +1144,7 @@ class CSGCoordinator(DataUpdateCoordinator):
         if not changed:
             return
 
-        # Keep the latest 730 days.
+        # Keep only the latest 730 days.
         sorted_dates = sorted(history)
 
         if len(sorted_dates) > DAILY_USAGE_HISTORY_MAX_DAYS:
@@ -1188,5 +1152,5 @@ class CSGCoordinator(DataUpdateCoordinator):
                 del history[date]
 
         await self._daily_usage_store.async_save(
-        self._daily_usage_history
-    )
+            self._daily_usage_history
+        )
