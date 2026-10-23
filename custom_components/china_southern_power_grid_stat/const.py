@@ -69,6 +69,8 @@ SUFFIX_LAST_YEAR_KWH = "last_year_total_usage"
 SUFFIX_LAST_YEAR_COST = "last_year_total_cost"
 SUFFIX_LAST_MONTH_KWH = "last_month_total_usage"
 SUFFIX_LAST_MONTH_COST = "last_month_total_cost"
+SUFFIX_DAILY_USAGE_HISTORY = "daily_usage_history"
+SUFFIX_MONTHLY_USAGE_SUMMARY = "monthly_usage_summary"
 
 ATTR_KEY_THIS_MONTH_BY_DAY = "this_month_by_day"
 ATTR_KEY_THIS_YEAR_BY_MONTH = "this_year_by_month"
@@ -76,9 +78,36 @@ ATTR_KEY_LAST_MONTH_BY_DAY = "last_month_by_day"
 ATTR_KEY_LAST_YEAR_BY_MONTH = "last_year_by_month"
 ATTR_KEY_LATEST_DAY_DATE = "latest_day_date"
 ATTR_KEY_CURRENT_LADDER_START_DATE = "current_ladder_start_date"
+# history attributes
+ATTR_KEY_DAILY_USAGE_HISTORY = "daily_usage_history"
+ATTR_KEY_MONTHLY_USAGE_HISTORY = "monthly_usage_history"
+ATTR_KEY_YEARLY_USAGE_HISTORY = "yearly_usage_history"
+ATTR_KEY_HISTORY_START = "history_start"
+ATTR_KEY_HISTORY_END = "history_end"
+ATTR_KEY_HISTORY_DAYS = "history_days"
+ATTR_KEY_HISTORY_BACKFILL_COMPLETE = "history_backfill_complete"
 
 STATE_UPDATE_UNCHANGED = "unchanged"
 DATA_KEY_LAST_UPDATE_DAY = "last_update_day"
+
+# history
+# storage key for persistent daily/monthly usage history
+STORAGE_KEY_USAGE_HISTORY = f"{DOMAIN}.usage_history"
+STORAGE_VERSION_USAGE_HISTORY = 1
+# months of daily data to back-fill on first run
+HISTORY_BACKFILL_MONTHS = 12
+# delay between back-fill requests to avoid hammering the CSG API
+HISTORY_BACKFILL_INTERVAL = 1.5
+# how many recent months are exposed in the `monthly_usage_history` attribute
+HISTORY_ATTRIBUTE_MONTHS = 24
+# debounce for writing history to disk
+HISTORY_SAVE_DELAY = 10
+
+# frontend card
+URL_BASE = "/china_southern_power_grid_stat"
+CARD_FILENAME = "china-southern-power-grid-usage-card.js"
+CARD_VERSION = "1.0.0"
+CARD_URL = f"{URL_BASE}/{CARD_FILENAME}?v={CARD_VERSION}"
 
 # settings
 

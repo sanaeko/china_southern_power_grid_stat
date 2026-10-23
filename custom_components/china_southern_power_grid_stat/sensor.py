@@ -22,6 +22,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
@@ -30,32 +31,47 @@ from homeassistant.helpers.update_coordinator import (
 from . import CONF_UPDATED_AT
 from .const import (
     ATTR_KEY_CURRENT_LADDER_START_DATE,
+    ATTR_KEY_DAILY_USAGE_HISTORY,
+    ATTR_KEY_HISTORY_BACKFILL_COMPLETE,
+    ATTR_KEY_HISTORY_DAYS,
+    ATTR_KEY_HISTORY_END,
+    ATTR_KEY_HISTORY_START,
     ATTR_KEY_LAST_MONTH_BY_DAY,
     ATTR_KEY_LAST_YEAR_BY_MONTH,
     ATTR_KEY_LATEST_DAY_DATE,
+    ATTR_KEY_MONTHLY_USAGE_HISTORY,
     ATTR_KEY_THIS_MONTH_BY_DAY,
     ATTR_KEY_THIS_YEAR_BY_MONTH,
+    ATTR_KEY_YEARLY_USAGE_HISTORY,
     CONF_AUTH_TOKEN,
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
     CONF_UPDATE_INTERVAL,
     DATA_KEY_LAST_UPDATE_DAY,
     DOMAIN,
+    HISTORY_ATTRIBUTE_MONTHS,
+    HISTORY_BACKFILL_INTERVAL,
+    HISTORY_BACKFILL_MONTHS,
+    HISTORY_SAVE_DELAY,
     SETTING_LAST_MONTH_UPDATE_DAY_THRESHOLD,
     SETTING_LAST_YEAR_UPDATE_DAY_THRESHOLD,
     SETTING_UPDATE_TIMEOUT,
     STATE_UPDATE_UNCHANGED,
+    STORAGE_KEY_USAGE_HISTORY,
+    STORAGE_VERSION_USAGE_HISTORY,
     SUFFIX_ARR,
     SUFFIX_BAL,
     SUFFIX_CURRENT_LADDER,
     SUFFIX_CURRENT_LADDER_REMAINING_KWH,
     SUFFIX_CURRENT_LADDER_TARIFF,
+    SUFFIX_DAILY_USAGE_HISTORY,
     SUFFIX_LAST_MONTH_COST,
     SUFFIX_LAST_MONTH_KWH,
     SUFFIX_LAST_YEAR_COST,
     SUFFIX_LAST_YEAR_KWH,
     SUFFIX_LATEST_DAY_COST,
     SUFFIX_LATEST_DAY_KWH,
+    SUFFIX_MONTHLY_USAGE_SUMMARY,
     SUFFIX_THIS_MONTH_COST,
     SUFFIX_THIS_MONTH_KWH,
     SUFFIX_THIS_YEAR_COST,
@@ -76,8 +92,61 @@ from .csg_client import (
     CSGElectricityAccount,
     NotLoggedIn,
 )
+from .history import HistoryStore, parse_date
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _month_length(month: datetime.date) -> int:
+    """Return the number of days in the month containing ``month``."""
+    following = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return (following - timedelta(days=1)).day
+
+
+def _next_month(month: datetime.date) -> datetime.date:
+    """Return the first day of the month after ``month``."""
+    return (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+
+def backfill_months(today: datetime.date, months: int) -> list[datetime.date]:
+    """Return the first day of each month to fetch, oldest first.
+
+    The list includes the current month, so ``months`` is the total number of
+    calendar months covered by the back-fill window.
+    """
+    this_month = today.replace(day=1)
+    first_month = this_month
+    for _ in range(months - 1):
+        first_month = (first_month - timedelta(days=1)).replace(day=1)
+
+    result = []
+    month = first_month
+    end_month = _next_month(this_month)
+    while month < end_month:
+        result.append(month)
+        month = _next_month(month)
+    return result
+
+
+async def async_get_coordinator(
+    hass: HomeAssistant, config_entry: ConfigEntry
+) -> CSGCoordinator:
+    """Return the shared coordinator for an entry, creating it on first use.
+
+    Platforms for one config entry are set up concurrently, so the sensor and
+    calendar platforms both call this and must end up sharing one coordinator
+    (otherwise the calendar would poll the API a second time). The get/create
+    pair below contains no ``await``, so it runs atomically on the event loop.
+    """
+    entry_data = hass.data.setdefault(DOMAIN, {}).setdefault(
+        config_entry.entry_id, {}
+    )
+    coordinator = entry_data.get("coordinator")
+    if coordinator is None:
+        coordinator = entry_data["coordinator"] = CSGCoordinator(
+            hass, config_entry.entry_id
+        )
+    return coordinator
 
 
 async def async_setup_entry(
@@ -89,7 +158,7 @@ async def async_setup_entry(
     if not config_entry.data[CONF_ELE_ACCOUNTS]:
         _LOGGER.info("No ele accounts in config, exit entry setup")
         return
-    coordinator = CSGCoordinator(hass, config_entry.entry_id)
+    coordinator = await async_get_coordinator(hass, config_entry)
 
     all_sensors = []
     for ele_account_number, _ in config_entry.data[CONF_ELE_ACCOUNTS].items():
@@ -186,6 +255,16 @@ async def async_setup_entry(
                 ele_account_number,
                 SUFFIX_LAST_MONTH_COST,
                 extra_state_attributes_key=ATTR_KEY_LAST_MONTH_BY_DAY,
+            ),
+            # rolling 1-year daily usage history (with calendar/trend attributes)
+            CSGDailyUsageHistorySensor(
+                coordinator,
+                ele_account_number,
+            ),
+            # last 24 months of monthly totals, for the monthly trend
+            CSGMonthlySummarySensor(
+                coordinator,
+                ele_account_number,
             ),
         ]
 
@@ -331,6 +410,57 @@ class CSGLadderStageSensor(CSGBaseSensor):
     _attr_icon = "mdi:stairs"
 
 
+class CSGDailyUsageHistorySensor(CSGBaseSensor):
+    """Latest daily usage, carrying the rolling 1-year history as attributes.
+
+    Attributes:
+
+    * ``daily_usage_history`` – list of ``{date, kwh, cost}`` for every day of
+      the retained window (``kwh`` is ``null`` when the API had no reading).
+    * ``monthly_usage_history`` / ``yearly_usage_history`` – the aggregates
+      used by the monthly and yearly trend.
+    * ``history_start`` / ``history_end`` / ``history_days`` – coverage.
+    """
+
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:calendar-chart"
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        account_number: str,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            account_number,
+            SUFFIX_DAILY_USAGE_HISTORY,
+            extra_state_attributes_key=ATTR_KEY_DAILY_USAGE_HISTORY,
+        )
+
+
+class CSGMonthlySummarySensor(CSGBaseSensor):
+    """Latest month's usage, carrying the monthly trend as attributes."""
+
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:chart-bar"
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        account_number: str,
+    ) -> None:
+        super().__init__(
+            coordinator,
+            account_number,
+            SUFFIX_MONTHLY_USAGE_SUMMARY,
+            extra_state_attributes_key=ATTR_KEY_MONTHLY_USAGE_HISTORY,
+        )
+
+
 class CSGCoordinator(DataUpdateCoordinator):
     """CSG custom coordinator."""
 
@@ -358,6 +488,18 @@ class CSGCoordinator(DataUpdateCoordinator):
         self._last_month_ym = None
         self._this_month_update_completed_flag = asyncio.Event()
         self._gathered_data = {}
+
+        self._history = HistoryStore(
+            Store(
+                hass,
+                STORAGE_VERSION_USAGE_HISTORY,
+                STORAGE_KEY_USAGE_HISTORY,
+                atomic_writes=True,
+                serialize_in_event_loop=False,
+            )
+        )
+        self._history_loaded = False
+        self._backfill_task: asyncio.Task | None = None
 
     async def _async_refresh_client(self):
         """Refresh the client, update the user data.
@@ -849,6 +991,197 @@ class CSGCoordinator(DataUpdateCoordinator):
             ATTR_KEY_LATEST_DAY_DATE: latest_day_date
         }
 
+    async def _async_ensure_history_loaded(self) -> None:
+        """Load persisted history once."""
+        if self._history_loaded:
+            return
+        await self._history.async_load()
+        self._history_loaded = True
+
+    @staticmethod
+    def _attribute_payload(account_data: dict[str, Any], key: str) -> Any:
+        """Unwrap an attribute dict, returning the list inside or ``None``.
+
+        The coordinator stores attributes as ``{key: payload}`` so that they
+        can be spliced into ``extra_state_attributes`` directly.
+        """
+        payload = account_data.get(key)
+        if not isinstance(payload, dict):
+            return None
+        return payload.get(key)
+
+    @staticmethod
+    def _daily_records(by_day: Any) -> list[tuple[datetime.date, Any, Any]]:
+        """Convert an API ``by_day`` list into ``(date, kwh, cost)`` tuples."""
+        if not isinstance(by_day, list):
+            return []
+        records = []
+        for item in by_day:
+            if not isinstance(item, dict):
+                continue
+            day = parse_date(item.get(WF_ATTR_DATE))
+            if day is None:
+                continue
+            records.append((day, item.get(WF_ATTR_KWH), item.get(WF_ATTR_CHARGE)))
+        return records
+
+    def _record_history(self, account_number: str, **sources: Any) -> None:
+        """Merge the freshest data available into the persistent history.
+
+        ``sources`` may contain ``this_month_by_day``, ``last_month_by_day``
+        (lists of API day dicts) and ``year_by_month`` (the yearly API
+        ``by_month`` list). Monthly aggregates are recomputed from the daily
+        records afterwards.
+        """
+        history = self._history.get(account_number)
+        changed = False
+        today = datetime.date.today()
+
+        for key in ("this_month_by_day", "last_month_by_day"):
+            changed |= history.merge_days(self._daily_records(sources.get(key)))
+
+        for item in sources.get("year_by_month") or []:
+            if not isinstance(item, dict):
+                continue
+            month = item.get("month")
+            if not isinstance(month, str) or len(month) != 7:
+                continue
+            changed |= history.merge_month(
+                month, item.get(WF_ATTR_KWH), item.get(WF_ATTR_CHARGE)
+            )
+
+        changed |= history.rebuild_months(today)
+        changed |= history.prune(today)
+
+        if changed:
+            history.updated = datetime.datetime.now().isoformat(timespec="seconds")
+            self._history.async_delay_save(HISTORY_SAVE_DELAY)
+
+    def _history_attributes(self, account_number: str) -> dict[str, Any]:
+        """Build the history related attributes for the history sensors."""
+        history = self._history.get(account_number)
+        today = datetime.date.today()
+        latest = history.latest_day()
+        oldest = min(history.days) if history.days else None
+        return {
+            ATTR_KEY_DAILY_USAGE_HISTORY: history.daily_series(
+                today - timedelta(days=HISTORY_BACKFILL_MONTHS * 31), today
+            ),
+            ATTR_KEY_MONTHLY_USAGE_HISTORY: history.monthly_series(
+                months=HISTORY_ATTRIBUTE_MONTHS
+            ),
+            ATTR_KEY_YEARLY_USAGE_HISTORY: history.yearly_series(),
+            ATTR_KEY_HISTORY_START: oldest.isoformat() if oldest else None,
+            ATTR_KEY_HISTORY_END: latest[0] if latest else None,
+            ATTR_KEY_HISTORY_DAYS: len(history.days),
+            ATTR_KEY_HISTORY_BACKFILL_COMPLETE: history.backfilled,
+        }
+
+    def _update_history_sensors(self, account_number: str) -> None:
+        """Publish the history sensor values into the coordinator data."""
+        account_data = self._gathered_data[account_number]
+        history = self._history.get(account_number)
+        latest = history.latest_day()
+        account_data[SUFFIX_DAILY_USAGE_HISTORY] = (
+            latest[1].kwh if latest else STATE_UNAVAILABLE
+        )
+        monthly = history.monthly_series(months=HISTORY_ATTRIBUTE_MONTHS)
+        account_data[SUFFIX_MONTHLY_USAGE_SUMMARY] = (
+            monthly[-1]["kwh"] if monthly else STATE_UNAVAILABLE
+        )
+        attributes = self._history_attributes(account_number)
+        account_data[ATTR_KEY_DAILY_USAGE_HISTORY] = attributes
+        account_data[ATTR_KEY_MONTHLY_USAGE_HISTORY] = attributes
+
+    async def _async_backfill_history(self, account: CSGElectricityAccount) -> None:
+        """Fetch daily usage for the last N months to seed the history.
+
+        Runs once in the background so that the initial setup is not blocked.
+        Months that already hold data are skipped, and the task is interrupted
+        gracefully when the config entry is unloaded.
+        """
+        history = self._history.get(account.account_number)
+        if history.backfilled:
+            return
+        today = datetime.date.today()
+        this_month = today.replace(day=1)
+
+        fetched = 0
+        for month in backfill_months(today, HISTORY_BACKFILL_MONTHS):
+            month_prefix = month.strftime("%Y-%m")
+            covered = sum(
+                1
+                for key, record in history.days.items()
+                if key.startswith(month_prefix) and record.kwh is not None
+            )
+            # Skip months we already fully hold (the current month is always refreshed).
+            if covered >= _month_length(month) and month != this_month:
+                continue
+
+            try:
+                success, result = await self._async_fetch(
+                    self._client.get_month_daily_usage_detail,
+                    account,
+                    (month.year, month.month),
+                )
+            except asyncio.CancelledError:
+                _LOGGER.debug(
+                    "Ele account %s: history back-fill cancelled",
+                    account.account_number,
+                )
+                raise
+
+            if success and result is not None:
+                _, by_day = result
+                if by_day:
+                    history.merge_days(self._daily_records(by_day))
+                    fetched += 1
+            else:
+                _LOGGER.debug(
+                    "Ele account %s: history back-fill for %s returned no data",
+                    account.account_number,
+                    month_prefix,
+                )
+
+            await asyncio.sleep(HISTORY_BACKFILL_INTERVAL)
+
+        history.rebuild_months(today)
+        history.prune(today)
+        history.backfilled = True
+        history.updated = datetime.datetime.now().isoformat(timespec="seconds")
+        await self._history.async_save()
+
+        # Push the back-filled data to the entities.
+        for account_number in self._gathered_data:
+            self._update_history_sensors(account_number)
+        self.async_update_listeners()
+        _LOGGER.info(
+            "Ele account %s: history back-filled from %d months of data",
+            account.account_number,
+            fetched,
+        )
+
+    def _schedule_backfill(self, accounts: list[CSGElectricityAccount]) -> None:
+        """Start the background back-fill task if it is not running."""
+        if self._backfill_task is not None and not self._backfill_task.done():
+            return
+
+        async def _run() -> None:
+            for account in accounts:
+                try:
+                    await self._async_backfill_history(account)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # pylint: disable=broad-except
+                    _LOGGER.exception(
+                        "Ele account %s: history back-fill failed",
+                        account.account_number,
+                    )
+
+        self._backfill_task = self.hass.async_create_background_task(
+            _run(), "csg history backfill", eager_start=False
+        )
+
     def _update_states(self):
         current_dt = datetime.datetime.now()
         this_year, this_month, this_day = (
@@ -940,6 +1273,29 @@ class CSGCoordinator(DataUpdateCoordinator):
                 exc,
             )
 
+        # Persist what we just learned into the rolling history.
+        try:
+            account_data = self._gathered_data[account.account_number]
+            self._record_history(
+                account.account_number,
+                this_month_by_day=self._attribute_payload(
+                    account_data, ATTR_KEY_THIS_MONTH_BY_DAY
+                ),
+                last_month_by_day=self._attribute_payload(
+                    account_data, ATTR_KEY_LAST_MONTH_BY_DAY
+                ),
+                year_by_month=self._attribute_payload(
+                    account_data, ATTR_KEY_THIS_YEAR_BY_MONTH
+                ),
+            )
+            self._update_history_sensors(account.account_number)
+        except Exception as exc:  # pylint: disable=broad-except
+            _LOGGER.error(
+                "Ele account %s, update usage history failed: %s",
+                account.account_number,
+                exc,
+            )
+
         _LOGGER.debug(
             "Ele account %s, update took %s seconds",
             account.account_number,
@@ -955,6 +1311,7 @@ class CSGCoordinator(DataUpdateCoordinator):
         self.update_interval = timedelta(
             seconds=self._config[CONF_SETTINGS][CONF_UPDATE_INTERVAL]
         )
+        await self._async_ensure_history_loaded()
         self._update_states()
         # _LOGGER.debug("Coordinator update interval: %d", self.update_interval.seconds)
         _LOGGER.debug("Coordinator update started")
@@ -964,6 +1321,7 @@ class CSGCoordinator(DataUpdateCoordinator):
         config_entry_need_update = False
         await self._async_refresh_client()
         new_config = self._config.copy()
+        accounts_to_backfill: list[CSGElectricityAccount] = []
         for account_number, account_data in self._config[CONF_ELE_ACCOUNTS].items():
             self._gathered_data[account_number] = {}
             account = CSGElectricityAccount.load(account_data)
@@ -990,6 +1348,9 @@ class CSGCoordinator(DataUpdateCoordinator):
                             break
 
             await self._async_update_account_data(account)
+            accounts_to_backfill.append(account)
+        if accounts_to_backfill:
+            self._schedule_backfill(accounts_to_backfill)
         if config_entry_need_update:
             new_config[CONF_UPDATED_AT] = str(int(time.time() * 1000))
             self.hass.config_entries.async_update_entry(

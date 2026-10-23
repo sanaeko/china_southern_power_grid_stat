@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
@@ -13,22 +14,19 @@ from homeassistant.helpers import entity_registry
 from homeassistant.helpers.device_registry import DeviceEntry
 
 from .const import (
+    CARD_URL,
     CONF_AUTH_TOKEN,
     CONF_ELE_ACCOUNTS,
     CONF_LOGIN_TYPE,
     CONF_UPDATED_AT,
     DOMAIN,
+    URL_BASE,
 )
 from .csg_client import (
-    CSGAPIError,
     CSGClient,
-    CSGElectricityAccount,
-    InvalidCredentials,
-    NotLoggedIn,
 )
-from .sensor import CSGCostSensor, CSGEnergySensor
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.CALENDAR]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -53,20 +51,74 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         client.initialize
     )
 
-    hass.data[DOMAIN][entry.entry_id] = {
-        "client": client
-    }
+    hass.data[DOMAIN].setdefault(entry.entry_id, {})["client"] = client
+
+    await _async_register_card(hass)
 
     await hass.config_entries.async_forward_entry_setups(
         entry,
         PLATFORMS
     )
 
-    # hass.data[DOMAIN][entry.entry_id] = {}
-
-    # await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
+
+
+async def _async_register_card(hass: HomeAssistant) -> None:
+    """Serve the bundled Lovelace card and register it as a resource.
+
+    Registration is idempotent: the static path and the resource are only
+    added once, even though this runs per config entry. Failures are logged
+    and never prevent the integration itself from loading.
+    """
+    if hass.data[DOMAIN].get("card_registered"):
+        return
+    hass.data[DOMAIN]["card_registered"] = True
+
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    URL_BASE,
+                    hass.config.path("custom_components", DOMAIN, "frontend"),
+                    cache_headers=True,
+                )
+            ]
+        )
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.exception("Failed to register the usage card static path")
+        return
+
+    try:
+        from homeassistant.components.lovelace.const import (  # noqa: PLC0415
+            LOVELACE_DATA,
+        )
+
+        lovelace_data = hass.data.get(LOVELACE_DATA)
+        resources = getattr(lovelace_data, "resources", None)
+        if resources is None:
+            _LOGGER.debug("Lovelace not available, card must be added manually")
+            return
+        # YAML resource collections are read-only lists.
+        if not hasattr(resources, "async_create_item"):
+            _LOGGER.info(
+                "Lovelace uses YAML resources; add %s manually under "
+                "lovelace.resources in configuration.yaml",
+                CARD_URL,
+            )
+            return
+
+        await resources.async_load()
+        existing = {item.get("url") for item in resources.async_items()}
+        if CARD_URL in existing:
+            return
+        await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+        _LOGGER.info("Registered Lovelace resource %s", CARD_URL)
+    except Exception:  # pylint: disable=broad-except
+        _LOGGER.warning(
+            "Could not auto-register the usage card; add it manually under "
+            "Settings > Dashboards > Resources with URL %s",
+            CARD_URL,
+        )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -74,8 +126,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug(f"Unloading entry: {entry.title}")
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     _LOGGER.debug(f"Unload platforms for entry: {entry.title}, success: {unload_ok}")
-    hass.data[DOMAIN].pop(entry.entry_id)
-    return True
+    entry_data = hass.data[DOMAIN].pop(entry.entry_id, {}) or {}
+    coordinator = entry_data.get("coordinator")
+    backfill_task = getattr(coordinator, "_backfill_task", None)
+    if backfill_task is not None and not backfill_task.done():
+        backfill_task.cancel()
+    return unload_ok
 
 
 async def async_remove_config_entry_device(
