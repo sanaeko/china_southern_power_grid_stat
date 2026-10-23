@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 import time
+from pathlib import Path
 
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
@@ -20,19 +23,26 @@ from .const import (
     CONF_LOGIN_TYPE,
     CONF_UPDATED_AT,
     DOMAIN,
+    LEGACY_DOMAIN,
+    STORAGE_KEY_USAGE_HISTORY,
     URL_BASE,
 )
 from .csg_client import (
     CSGClient,
 )
+from .utils import find_card_resources
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.CALENDAR]
 _LOGGER = logging.getLogger(__name__)
+_STORAGE_DIR = ".storage"
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up China Southern Power Grid Statistics from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+
+    # Carry the usage history over from the previous (uppercase) domain name.
+    await _async_migrate_legacy_history(hass)
 
     # validate session, re-authenticate if needed
     client = CSGClient.load(
@@ -63,6 +73,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+async def _async_migrate_legacy_history(hass: HomeAssistant) -> None:
+    """Copy the usage history written under the old domain name.
+
+    Renaming the domain (to make it a valid, lowercase domain so Home Assistant
+    can serve the brand logo) changes the storage filename. Without this the
+    collected daily history would look empty and have to be back-filled again.
+
+    Idempotent: it does nothing once the new file exists, and never overwrites.
+    """
+    if hass.data[DOMAIN].get("legacy_history_checked"):
+        return
+    hass.data[DOMAIN]["legacy_history_checked"] = True
+
+    # Storage keys are "<domain>.usage_history".
+    legacy_key = f"{LEGACY_DOMAIN}.usage_history"
+    legacy_path = hass.config.path(_STORAGE_DIR, legacy_key)
+    current_path = hass.config.path(_STORAGE_DIR, STORAGE_KEY_USAGE_HISTORY)
+
+    def _copy_if_needed() -> bool:
+        if os.path.exists(current_path) or not os.path.exists(legacy_path):
+            return False
+        os.makedirs(os.path.dirname(current_path), exist_ok=True)
+        shutil.copy2(legacy_path, current_path)
+        return True
+
+    try:
+        copied = await hass.async_add_executor_job(_copy_if_needed)
+    except OSError:
+        _LOGGER.exception("Could not migrate the usage history from %s", legacy_key)
+        return
+
+    if copied:
+        _LOGGER.info(
+            "Migrated usage history from %s to %s",
+            legacy_key,
+            STORAGE_KEY_USAGE_HISTORY,
+        )
+
+
 async def _async_register_card(hass: HomeAssistant) -> None:
     """Serve the bundled Lovelace card and register it as a resource.
 
@@ -79,7 +128,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
             [
                 StaticPathConfig(
                     URL_BASE,
-                    hass.config.path("custom_components", DOMAIN, "frontend"),
+                    str(Path(__file__).parent / "frontend"),
                     cache_headers=True,
                 )
             ]
@@ -108,11 +157,23 @@ async def _async_register_card(hass: HomeAssistant) -> None:
             return
 
         await resources.async_load()
-        existing = {item.get("url") for item in resources.async_items()}
-        if CARD_URL in existing:
+        matches = find_card_resources(resources.async_items(), CARD_URL)
+
+        if not matches:
+            await resources.async_create_item({"res_type": "module", "url": CARD_URL})
+            _LOGGER.info("Registered Lovelace resource %s", CARD_URL)
             return
-        await resources.async_create_item({"res_type": "module", "url": CARD_URL})
-        _LOGGER.info("Registered Lovelace resource %s", CARD_URL)
+
+        # Keep the first entry, point it at the current version, drop the rest.
+        keep, *duplicates = matches
+        if keep.get("url") != CARD_URL:
+            await resources.async_update_item(
+                keep["id"], {"res_type": "module", "url": CARD_URL}
+            )
+            _LOGGER.debug("Updated Lovelace resource to %s", CARD_URL)
+        for duplicate in duplicates:
+            await resources.async_delete_item(duplicate["id"])
+            _LOGGER.info("Removed duplicate Lovelace resource %s", duplicate.get("url"))
     except Exception:  # pylint: disable=broad-except
         _LOGGER.warning(
             "Could not auto-register the usage card; add it manually under "

@@ -47,3 +47,25 @@ def account_display_name(account_data: dict[str, Any] | None) -> str:
     if len(name) > MAX_DEVICE_NAME_LEN:
         name = name[: MAX_DEVICE_NAME_LEN - 1] + "…"
     return name
+
+
+def card_resource_url_path(url: Any) -> str:
+    """Return the path part of a Lovelace resource URL, without its query."""
+    if not isinstance(url, str):
+        return ""
+    return url.split("?", 1)[0]
+
+
+def find_card_resources(
+    items: list[dict[str, Any]], card_url: str
+) -> list[dict[str, Any]]:
+    """Return the Lovelace resources that already point at our card.
+
+    Matching ignores the ``?v=`` query string: it changes with every release, so
+    comparing whole URLs would register a new entry per version and leave the
+    old ones loading a stale card.
+    """
+    base_url = card_resource_url_path(card_url)
+    if not base_url:
+        return []
+    return [item for item in items if card_resource_url_path(item.get("url")) == base_url]

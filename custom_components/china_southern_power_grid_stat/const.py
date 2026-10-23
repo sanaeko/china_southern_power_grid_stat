@@ -4,7 +4,14 @@ from datetime import timedelta
 
 from .csg_client import LoginType
 
-DOMAIN = "china_southern_power_grid_stat_GDJM"
+DOMAIN = "china_southern_power_grid_stat_gdjm"
+
+# The integration used to be published under an uppercase domain
+# ("..._GDJM"). Home Assistant's brand-image endpoint validates the domain
+# against ``[\da-z_]+`` only, so an uppercase domain can never serve a logo.
+# The old name is kept here purely so the saved usage history can be migrated
+# instead of being orphaned by the rename.
+LEGACY_DOMAIN = "china_southern_power_grid_stat_GDJM"
 
 # config flow
 # main account (phone number)

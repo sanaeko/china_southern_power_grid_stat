@@ -36,7 +36,7 @@
 ### 持久化 1 年用电历史
 
 集成会把每天抓到的用电量/电费写入 Home Assistant 的存储文件
-（`.storage/china_southern_power_grid_stat_GDJM.usage_history`），
+（`.storage/china_southern_power_grid_stat_gdjm.usage_history`），
 即使重启 HA 也不会丢失，并自动滚动保留最近 **400 天**。
 
 首次加载时会在**后台**自动回填过去 **12 个月**的每日用电数据
@@ -59,7 +59,11 @@
 - `history_start` / `history_end` / `history_days`：历史覆盖范围
 - `history_backfill_complete`：是否已完成首次回填
 
-> `partial: true` 表示该月数据尚未完整（当月，或部分日期缺数据）。
+> `partial: true` 表示该月**仍在进行中**，因此只有**当前月份**会是 `true`。
+> 月份结束后会自动变回 `false`（每次更新都会重新计算，不会残留）。
+>
+> 注意：已结束的月份即使逐日读数不全（例如开户当月），也不算 `partial` ——
+> 这种情况下会直接采用接口返回的整月账单数，那才是权威值。
 
 ### 日历
 
@@ -141,9 +145,37 @@ entity_id 使用英文，避免中文名被转成拼音（如 `sensor.yu_e`）�
 > 2. **重新添加**并重新扫码登录、选择缴费号
 >
 > 删除不会清空已保存的用电历史（历史存在
-> `.storage/china_southern_power_grid_stat_GDJM.usage_history`，按缴费号保存，
+> `.storage/china_southern_power_grid_stat_gdjm.usage_history`，按缴费号保存，
 > 重新添加后会继续使用）。如果你希望保留现有 `entity_id` 不动，只改显示名，
 > 可以只删除实体注册表里的旧实体后再重载集成。
+
+### ⚠️ v1.7.0 域名变更（从 `_GDJM` 改为小写 `_gdjm`）
+
+**这是一个破坏性变更，升级后必须重新添加集成。**
+
+原因：Home Assistant 的品牌图标接口会用 `[\da-z_]+` 校验域名（见
+`homeassistant/core.py` 的 `VALID_DOMAIN`），**任何大写字母都会导致 404**。
+旧域名 `china_southern_power_grid_stat_GDJM` 含大写 `GDJM`，所以集成列表里的
+logo 永远无法显示——和图标文件是否存在无关。
+
+升级步骤：
+
+1. 覆盖 `custom_components/china_southern_power_grid_stat/`
+   （**确认 `custom_components/` 下本集成只有一个目录**——如果之前叫
+   `china_southern_power_grid_stat_GDJM`，请先删掉旧目录，否则两个目录的
+   manifest 域名相同会互相干扰）
+2. **重启** Home Assistant
+3. 在「设置 → 设备与服务」中，旧的 `..._GDJM` 条目会提示找不到集成，
+   **删除它**
+4. 重新添加集成并登录、选择缴费号
+
+用电历史会自动迁移（`_async_migrate_legacy_history` 会把
+`.storage/china_southern_power_grid_stat_GDJM.usage_history` 复制为
+`.storage/china_southern_power_grid_stat_gdjm.usage_history`），不会丢数据。
+实体 ID 会重新生成为 `sensor.balance` 等干净形式。
+
+> 卡片的前端资源路径不再依赖目录名（改为相对 `__file__` 定位），
+> 所以目录叫什么都能正常加载卡片。发现重复的旧版本卡片资源会被自动清理。
 
 ### 峰谷电价估算电费（v1.5.0 新增）
 
@@ -285,8 +317,9 @@ python scripts/make_brand_assets.py
 合并进历史文件，因此历史永远是"已知最好"的数据：
 
 - 每日数据只会被更新，不会被空值覆盖（避免某次接口异常抹掉已有数据）
-- 月度汇总由逐日数据求和得出；若接口直接返回的月总量大于逐日之和
-  （说明部分日期缺数据），则保留接口总量并标记 `partial: true`
+- 月度汇总由逐日数据求和得出；若接口直接返回的月总量更大（说明部分日期缺数据），
+  则保留接口总量（不标记 `partial`，因为已结束的月份就是完整账单）
+- `partial` 只表示"本月进行中"，每次更新重新计算，月份结束后自动清除
 - 首次加载时后台回填 12 个月，回填过的月份不会被重复请求
 
 ## 一些技术细节

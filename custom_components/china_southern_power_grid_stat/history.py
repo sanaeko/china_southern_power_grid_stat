@@ -34,6 +34,11 @@ from typing import Any, Iterable
 DATE_FORMAT = "%Y-%m-%d"
 MONTH_FORMAT = "%Y-%m"
 
+#: Tolerance when comparing an API-reported monthly total with the sum of the
+#: daily readings. Each day is rounded to 2 decimals, so the two can legitimately
+#: differ by a cent; treat anything within this as "the same figure".
+TOTAL_TOLERANCE = 0.005
+
 #: How many days of daily data are retained per account (1 year + slack for
 #: leap days and the trailing "today"/"yesterday" overlap).
 MAX_DAYS = 400
@@ -232,8 +237,13 @@ class AccountHistory:
 
         Any monthly total that the API reported directly is preserved when it
         is *larger* than the sum of the days we hold (which happens when daily
-        data for a month was unavailable but the monthly figure was not). The
-        month is then flagged as ``partial``.
+        data for a month was unavailable but the monthly figure was not).
+
+        ``partial`` means "this period is still in progress" and is therefore
+        only ever true for the month currently being lived through. It is
+        recomputed on every rebuild, so a month stops being partial as soon as
+        it ends. A finished month whose daily readings are incomplete is *not*
+        partial: the API's monthly total is authoritative for it.
         """
         sums: dict[str, MonthRecord] = {}
         for key, record in self.days.items():
@@ -252,25 +262,35 @@ class AccountHistory:
         for month, bucket in sums.items():
             existing = self.months.get(month)
             if existing is not None:
-                # Prefer a directly reported total when it covers more usage
-                # than we can account for from the daily records.
-                if existing.kwh > bucket.kwh + 0.01:
+                # Prefer the API's own monthly figure when it accounts for more
+                # usage than the daily readings we hold (e.g. the account opened
+                # mid-month, so the early days have no readings at all). A
+                # half-cent tolerance absorbs per-day rounding so an equal figure
+                # does not flip the displayed total back and forth.
+                if existing.kwh > bucket.kwh + TOTAL_TOLERANCE:
                     bucket.kwh = existing.kwh
                     bucket.cost = max(bucket.cost, existing.cost)
-                    bucket.partial = True
-                elif existing.partial:
-                    bucket.partial = True
                 # The API's charge total can legitimately exceed the sum of the
                 # daily charges (rounding/fees); never report less than it.
-                if existing.cost > bucket.cost + 0.01:
+                if existing.cost > bucket.cost + TOTAL_TOLERANCE:
                     bucket.cost = existing.cost
-            # The month in progress is always "so far".
-            if month == current_month:
-                bucket.partial = True
 
-            if self.months.get(month) is None or existing.to_dict() != bucket.to_dict():
+            bucket.partial = month == current_month
+
+            if existing is None or existing.to_dict() != bucket.to_dict():
                 changed = True
             self.months[month] = bucket
+
+        # Months that only have an API-reported total (no daily readings at
+        # all) still need their `partial` flag corrected, otherwise a stale
+        # value written by an older version would stick forever.
+        for month, record in self.months.items():
+            if month in sums:
+                continue
+            partial = month == current_month
+            if record.partial != partial:
+                record.partial = partial
+                changed = True
         return changed
 
     def prune(self, today: date, max_days: int = MAX_DAYS, max_months: int = MAX_MONTHS) -> bool:

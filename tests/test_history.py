@@ -109,15 +109,115 @@ def test_rebuild_months_sums_daily_values():
     assert h.months["2026-09"].partial is False
 
 
-def test_rebuild_months_keeps_larger_reported_total_as_partial():
-    """When daily data is missing, keep the API's authoritative total."""
+def test_rebuild_months_keeps_larger_reported_total_without_marking_partial():
+    """A finished month with missing daily data is complete, not "in progress".
+
+    Regression: the account opened mid-May, so the API's monthly total exceeds
+    the sum of the daily readings we can hold. That used to set `partial`, and
+    the flag then stuck forever, making finished months (May, August) show up
+    as "进行中" in the trend chart months later.
+    """
     h = AccountHistory()
     h.merge_days([(d("2026-08-01"), 10.0, 5.0)])
     h.merge_month("2026-08", 442.63, 122.56)
     h.rebuild_months(today=d("2026-10-23"))
+    # The API total is still authoritative for the magnitude...
     assert h.months["2026-08"].kwh == 442.63
     assert h.months["2026-08"].cost == 122.56
-    assert h.months["2026-08"].partial is True
+    # ...but the month is over, so it is not "in progress".
+    assert h.months["2026-08"].partial is False
+
+
+def test_stale_partial_flag_is_cleared_on_rebuild():
+    """Values written by an older version must be corrected, not left stuck."""
+    h = AccountHistory()
+    h.merge_days([(d("2026-05-20"), 10.0, 5.0)])
+    h.months["2026-05"] = MonthRecord(kwh=471.74, cost=133.73, days=1, partial=True)
+    h.months["2026-04"] = MonthRecord(kwh=100.0, cost=50.0, days=0, partial=True)
+
+    h.rebuild_months(today=d("2026-10-23"))
+    assert h.months["2026-05"].partial is False
+    # A month with no daily records at all is also corrected.
+    assert h.months["2026-04"].partial is False
+
+
+def test_month_stops_being_partial_once_it_ends():
+    h = AccountHistory()
+    h.merge_days([(d("2026-09-15"), 10.0, 5.0)])
+
+    # While September is the current month it is in progress...
+    h.rebuild_months(today=d("2026-09-20"))
+    assert h.months["2026-09"].partial is True
+
+    # ...and once October starts it is finished.
+    h.rebuild_months(today=d("2026-10-01"))
+    assert h.months["2026-09"].partial is False
+
+
+def test_only_the_current_month_is_partial():
+    h = AccountHistory()
+    h.merge_days(
+        [
+            (d("2026-07-01"), 10.0, 5.0),
+            (d("2026-08-01"), 10.0, 5.0),
+            (d("2026-09-01"), 10.0, 5.0),
+            (d("2026-10-01"), 10.0, 5.0),
+        ]
+    )
+    h.rebuild_months(today=d("2026-10-23"))
+    partials = {m: r.partial for m, r in sorted(h.months.items())}
+    assert partials == {
+        "2026-07": False,
+        "2026-08": False,
+        "2026-09": False,
+        "2026-10": True,
+    }
+
+
+def test_real_account_only_current_month_is_partial():
+    """Reproduces the live account figures observed on 2026-10-23.
+
+    ``month      daily sum   API total   old flag``
+    ``2026-05      251.13      471.74     True``   account opened on the 18th
+    ``2026-06      380.82      380.82     False``
+    ``2026-07      499.49      499.49     False``
+    ``2026-08      442.62      442.63     True``   sticky, only 0.01 rounding
+    ``2026-09      571.33      571.31     False``
+    ``2026-10      328.33      328.33     True``   genuinely in progress
+
+    May and August wrongly showed as "进行中" months later; only the current
+    month may ever carry that flag.
+    """
+    real = {
+        "2026-05": (251.13, 471.74),
+        "2026-06": (380.82, 380.82),
+        "2026-07": (499.49, 499.49),
+        "2026-08": (442.62, 442.63),
+        "2026-09": (571.33, 571.31),
+        "2026-10": (328.33, 328.33),
+    }
+    h = AccountHistory()
+    for month, (daily_sum, api_total) in real.items():
+        h.merge_days([(d(f"{month}-15"), daily_sum, None)])
+        h.merge_month(month, api_total, None)
+    h.rebuild_months(today=d("2026-10-23"))
+
+    flags = {m: r.partial for m, r in sorted(h.months.items())}
+    assert flags == {
+        "2026-05": False,
+        "2026-06": False,
+        "2026-07": False,
+        "2026-08": False,
+        "2026-09": False,
+        "2026-10": True,
+    }
+
+    # The API's billing figure is used when the daily readings fall short...
+    assert h.months["2026-05"].kwh == 471.74
+    # ...and a one-cent rounding gap still adopts it rather than regressing.
+    assert h.months["2026-08"].kwh == 442.63
+    # Our own sum wins when it is fresher than the API's lagging total.
+    assert h.months["2026-09"].kwh == 571.33
 
 
 def test_current_month_is_partial():

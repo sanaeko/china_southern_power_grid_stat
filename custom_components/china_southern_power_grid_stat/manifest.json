@@ -1,5 +1,5 @@
 {
-  "domain": "china_southern_power_grid_stat_GDJM",
+  "domain": "china_southern_power_grid_stat_gdjm",
   "name": "China Southern Power Grid Statistics GDJM",
   "codeowners": [
     "@sanaeko",
@@ -16,6 +16,6 @@
     "brotli"
   ],
   "ssdp": [],
-  "version": "1.6.0",
+  "version": "1.7.0",
   "zeroconf": []
 }
