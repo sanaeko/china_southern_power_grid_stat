@@ -99,7 +99,7 @@ def test_long_names_are_truncated():
 
 def test_entity_names_are_short_and_unique():
     """Every suffix maps to a distinct, human friendly Chinese name."""
-    assert len(CHINESE_NAMES) == 18
+    assert len(CHINESE_NAMES) == 20
     names = list(CHINESE_NAMES.values())
     assert len(names) == len(set(names)), f"duplicate entity names: {names}"
     for name in names:
@@ -109,7 +109,7 @@ def test_entity_names_are_short_and_unique():
 
 def test_object_ids_are_ascii_and_unique():
     """entity_ids must be ASCII (not pinyin) and unique across entities."""
-    assert len(OBJECT_IDS) == 18
+    assert len(OBJECT_IDS) == 20
     ids = list(OBJECT_IDS.values())
     assert len(ids) == len(set(ids)), f"duplicate object ids: {ids}"
     for object_id in ids:

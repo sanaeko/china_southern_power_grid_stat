@@ -71,6 +71,11 @@ SUFFIX_LAST_MONTH_KWH = "last_month_total_usage"
 SUFFIX_LAST_MONTH_COST = "last_month_total_cost"
 SUFFIX_DAILY_USAGE_HISTORY = "daily_usage_history"
 SUFFIX_MONTHLY_USAGE_SUMMARY = "monthly_usage_summary"
+# Estimated charges derived from the hard-coded TOU rates (see TOU_RATES).
+# These are computed locally because the CSG API does not return daily charges
+# for accounts on time-of-use metering.
+SUFFIX_ESTIMATED_DAY_COST = "estimated_day_cost"
+SUFFIX_ESTIMATED_MONTH_COST = "estimated_month_cost"
 
 ATTR_KEY_THIS_MONTH_BY_DAY = "this_month_by_day"
 ATTR_KEY_THIS_YEAR_BY_MONTH = "this_year_by_month"
@@ -114,10 +119,34 @@ HISTORY_ATTRIBUTE_MONTHS = 24
 # debounce for writing history to disk
 HISTORY_SAVE_DELAY = 10
 
+# Time-of-use (峰谷) tariff.
+#
+# The CSG API cannot return a per-period breakdown (峰/谷/平) of consumption for
+# every account, nor does it return a daily charge, so the cost of a day cannot
+# be computed exactly. These rates are used to produce an *estimate*, and the
+# estimator deliberately uses the 谷 (valley) rate only: it is the cheapest
+# period, so the result is a lower bound rather than an over-statement.
+#
+# Periods (local time, hour ranges are [start, end)):
+#   峰 peak   10-12, 14-19   1.012 CNY/kWh
+#   谷 valley   0-8           0.233 CNY/kWh
+#   平 flat     8-10, 12-14, 19-24   0.599 CNY/kWh
+TOU_RATES = {"peak": 1.012, "valley": 0.233, "flat": 0.599}
+TOU_PERIODS: tuple[tuple[str, int, int], ...] = (
+    ("valley", 0, 8),
+    ("flat", 8, 10),
+    ("peak", 10, 12),
+    ("flat", 12, 14),
+    ("peak", 14, 19),
+    ("flat", 19, 24),
+)
+#: Rate used for the cost estimate (谷电价).
+ESTIMATE_RATE = TOU_RATES["valley"]
+
 # frontend card
 URL_BASE = "/china_southern_power_grid_stat"
 CARD_FILENAME = "china-southern-power-grid-usage-card.js"
-CARD_VERSION = "1.1.0"
+CARD_VERSION = "1.2.0"
 CARD_URL = f"{URL_BASE}/{CARD_FILENAME}?v={CARD_VERSION}"
 
 # entity naming
@@ -142,6 +171,8 @@ SUFFIX_TO_ENTITY_NAME: dict[str, str] = {
     SUFFIX_LAST_MONTH_COST: "上月电费",
     SUFFIX_DAILY_USAGE_HISTORY: "用电日历数据",
     SUFFIX_MONTHLY_USAGE_SUMMARY: "月度用电趋势",
+    SUFFIX_ESTIMATED_DAY_COST: "预计电费(日)",
+    SUFFIX_ESTIMATED_MONTH_COST: "预计电费(月)",
 }
 
 # English object ids keep entity_ids ASCII and scriptable (sensor.balance)
@@ -165,6 +196,8 @@ SUFFIX_TO_OBJECT_ID: dict[str, str] = {
     SUFFIX_LAST_MONTH_COST: "last_month_cost",
     SUFFIX_DAILY_USAGE_HISTORY: "usage_history",
     SUFFIX_MONTHLY_USAGE_SUMMARY: "usage_trend",
+    SUFFIX_ESTIMATED_DAY_COST: "estimated_day_cost",
+    SUFFIX_ESTIMATED_MONTH_COST: "estimated_month_cost",
 }
 CALENDAR_ENTITY_NAME = "用电日历"
 CALENDAR_OBJECT_ID = "usage_calendar"

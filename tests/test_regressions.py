@@ -100,19 +100,25 @@ def test_attribute_payload_survives_beside_state():
     latest = h.latest_day()
 
     account_data = {state_key: latest[1].kwh}
-    account_data[attr_key] = {"daily_usage_history": h.daily_series(
-        datetime.date.today() - datetime.timedelta(days=372), datetime.date.today()
-    )}
+    account_data[attr_key] = {"daily_usage_history": h.compact_daily_series()}
 
     assert account_data[state_key] == 58.1
     assert account_data[attr_key]["daily_usage_history"]
+    # The numeric state must not have been replaced by the attribute payload.
+    assert isinstance(account_data[state_key], float)
 
 
-def test_daily_series_covers_requested_window():
+def test_compact_series_only_contains_days_with_readings():
     h = AccountHistory()
-    end = datetime.date(2026, 10, 23)
-    start = end - datetime.timedelta(days=372)
-    series = h.daily_series(start, end)
-    assert len(series) == 373
-    assert series[0]["date"] == start.isoformat()
-    assert series[-1]["date"] == end.isoformat()
+    today = datetime.date(2026, 10, 23)
+    h.merge_days(
+        [
+            (today - datetime.timedelta(days=372), 10.0, None),
+            (today, 20.0, 5.0),
+        ]
+    )
+    rows = h.compact_daily_series()
+    assert rows[0][0] == (today - datetime.timedelta(days=372)).isoformat()
+    assert rows[-1][0] == today.isoformat()
+    # Only the two days that have readings are present.
+    assert len(rows) == 2

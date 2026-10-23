@@ -136,19 +136,37 @@ def test_days_without_kwh_are_not_counted_in_sums():
     assert h.months["2026-09"].days == 1
 
 
-def test_daily_series_fills_gaps():
+def test_compact_daily_series_shape_and_gaps():
+    """Only days with a reading are emitted, as short [date, kwh, cost?] rows."""
     h = AccountHistory()
-    h.merge_days([(d("2026-09-01"), 1.0, 0.5), (d("2026-09-03"), 3.0, 1.5)])
-    series = h.daily_series(d("2026-09-01"), d("2026-09-04"))
-    assert [row["date"] for row in series] == [
-        "2026-09-01",
-        "2026-09-02",
-        "2026-09-03",
-        "2026-09-04",
+    h.merge_days([(d("2026-09-01"), 1.0, 0.5), (d("2026-09-03"), 3.0, None)])
+    h.merge_days([(d("2026-09-02"), None, 9.9)])  # cost only, no kWh
+
+    rows = h.compact_daily_series()
+    assert rows == [
+        ["2026-09-01", 1.0, 0.5],
+        ["2026-09-03", 3.0],
     ]
-    assert series[1]["kwh"] is None  # gap, not zero
-    assert series[2]["kwh"] == 3.0
-    assert series[3]["kwh"] is None
+
+
+def test_compact_daily_series_stays_under_attribute_limit():
+    """A full year must fit in Home Assistant's 16 KB attribute limit."""
+    import json
+
+    h = AccountHistory()
+    start = d("2025-10-23")
+    for offset in range(400):
+        day = start + datetime.timedelta(days=offset)
+        h.merge_days([(day, 55.12, 33.45)])
+    h.rebuild_months(d("2026-10-23"))
+
+    payload = {
+        "daily": h.compact_daily_series(),
+        "monthly": h.monthly_series(24),
+        "yearly": h.yearly_series(),
+    }
+    size = len(json.dumps(payload, separators=(",", ":")).encode())
+    assert size < 16384, f"attribute payload {size} bytes exceeds the 16 KB limit"
 
 
 def test_monthly_and_yearly_series():

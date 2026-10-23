@@ -76,6 +76,18 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+def estimate_cost(kwh: float | None, rate: float) -> float | None:
+    """Estimate a charge from a consumption figure.
+
+    The CSG API does not expose how a day's consumption splits across the
+    time-of-use periods, so this is a lower-bound estimate: the caller passes
+    the valley rate, the cheapest period.
+    """
+    if kwh is None:
+        return None
+    return round(kwh * rate, 2)
+
+
 @dataclass
 class DayRecord:
     """One day's consumption."""
@@ -288,25 +300,24 @@ class AccountHistory:
         keys.update(self.months)
         return sorted(keys)
 
-    def daily_series(self, start: date, end: date) -> list[dict[str, Any]]:
-        """Return ``{date, kwh, cost}`` for every day in ``[start, end]``.
+    def compact_daily_series(self) -> list[list[Any]]:
+        """Return the daily history as compact rows for state attributes.
 
-        Days without data are returned with ``kwh=None`` so that a calendar can
-        still render them (and distinguish "no data" from "zero usage").
+        Each row is ``[date, kwh]`` or ``[date, kwh, cost]``. Only days with a
+        reading are included; the calendar infers gaps from the dates. The list
+        form keeps the payload well under Home Assistant's 16 KB recorder limit
+        even for a full year.
         """
-        series: list[dict[str, Any]] = []
-        cursor = start
-        while cursor <= end:
-            record = self.days.get(cursor.strftime(DATE_FORMAT))
-            series.append(
-                {
-                    "date": cursor.strftime(DATE_FORMAT),
-                    "kwh": None if record is None else record.kwh,
-                    "cost": None if record is None else record.cost,
-                }
-            )
-            cursor += timedelta(days=1)
-        return series
+        rows: list[list[Any]] = []
+        for key in sorted(self.days):
+            record = self.days[key]
+            if record.kwh is None:
+                continue
+            if record.cost is None:
+                rows.append([key, round(record.kwh, 2)])
+            else:
+                rows.append([key, round(record.kwh, 2), round(record.cost, 2)])
+        return rows
 
     def monthly_series(self, months: int = 12) -> list[dict[str, Any]]:
         """Return up to the last ``months`` months in chronological order."""
@@ -352,6 +363,30 @@ class AccountHistory:
             if record.kwh is not None:
                 return key, record
         return None
+
+    def latest_month_key(self) -> str | None:
+        """Return the most recent month that has any data."""
+        keys = self.month_keys()
+        return keys[-1] if keys else None
+
+    def estimated_costs(self, rate: float) -> dict[str, Any]:
+        """Estimate charges at ``rate`` for the latest day and latest month."""
+        latest = self.latest_day()
+        day_cost = estimate_cost(latest[1].kwh, rate) if latest else None
+
+        month_key = self.latest_month_key()
+        month_cost = None
+        if month_key is not None:
+            record = self.months.get(month_key)
+            if record is not None:
+                month_cost = round(record.kwh * rate, 2)
+
+        return {
+            "day": day_cost,
+            "day_date": latest[0] if latest else None,
+            "month": month_cost,
+            "month_key": month_key,
+        }
 
 
 class HistoryStore:

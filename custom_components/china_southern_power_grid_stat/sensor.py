@@ -51,6 +51,7 @@ from .const import (
     COORD_KEY_MONTHLY_HISTORY_ATTRS,
     DATA_KEY_LAST_UPDATE_DAY,
     DOMAIN,
+    ESTIMATE_RATE,
     HISTORY_ATTRIBUTE_MONTHS,
     HISTORY_BACKFILL_INTERVAL,
     HISTORY_BACKFILL_MONTHS,
@@ -67,6 +68,8 @@ from .const import (
     SUFFIX_CURRENT_LADDER_REMAINING_KWH,
     SUFFIX_CURRENT_LADDER_TARIFF,
     SUFFIX_DAILY_USAGE_HISTORY,
+    SUFFIX_ESTIMATED_DAY_COST,
+    SUFFIX_ESTIMATED_MONTH_COST,
     SUFFIX_LAST_MONTH_COST,
     SUFFIX_LAST_MONTH_KWH,
     SUFFIX_LAST_YEAR_COST,
@@ -81,6 +84,7 @@ from .const import (
     SUFFIX_TO_ENTITY_NAME,
     SUFFIX_TO_OBJECT_ID,
     SUFFIX_YESTERDAY_KWH,
+    TOU_RATES,
 )
 from .csg_client import (
     JSON_KEY_METERING_POINT_NUMBER,
@@ -271,6 +275,17 @@ async def async_setup_entry(
                 coordinator,
                 ele_account_number,
             ),
+            # charges estimated from the hard-coded time-of-use rates
+            CSGEstimatedCostSensor(
+                coordinator,
+                ele_account_number,
+                SUFFIX_ESTIMATED_DAY_COST,
+            ),
+            CSGEstimatedCostSensor(
+                coordinator,
+                ele_account_number,
+                SUFFIX_ESTIMATED_MONTH_COST,
+            ),
         ]
 
         all_sensors.extend(sensors)
@@ -414,6 +429,44 @@ class CSGEnergySensor(CSGBaseSensor):
     _attr_icon = "mdi:lightning-bolt"
 
 
+class CSGEstimatedCostSensor(CSGBaseSensor):
+    """Charge estimated from the hard-coded time-of-use tariffs.
+
+    The CSG API does not return a daily charge for accounts on time-of-use
+    metering, so this value is computed locally from the recorded consumption
+    at the valley rate. It is intentionally labelled as an estimate, and its
+    attributes document how it was derived so it is not mistaken for a billing
+    figure.
+    """
+
+    _attr_native_unit_of_measurement = "CNY"
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_icon = "mdi:cash-clock"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Explain how the estimate was produced.
+
+        Merged with whatever the coordinator published so the entity still
+        exposes its normal attributes.
+        """
+        attrs = dict(super().extra_state_attributes or {})
+        attrs.update(
+            {
+                "estimate": True,
+                "rate_used": ESTIMATE_RATE,
+                "rate_period": "谷（0-8时）",
+                "tou_rates": dict(TOU_RATES),
+                "note": (
+                    "本地估算：按谷电价×总电量计算，非实际账单金额。"
+                    "南网接口未提供每日峰/谷/平电量，无法精确计算。"
+                ),
+            }
+        )
+        return attrs
+
+
 class CSGCostSensor(CSGBaseSensor):
     """Representation of a CSG Cost Sensor."""
 
@@ -443,7 +496,9 @@ class CSGDailyUsageHistorySensor(CSGBaseSensor):
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    # Home Assistant only allows total/total_increasing for an energy device
+    # class; "measurement" logs a warning and blocks long-term statistics.
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:calendar-chart"
 
     def __init__(
@@ -464,7 +519,7 @@ class CSGMonthlySummarySensor(CSGBaseSensor):
 
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:chart-bar"
 
     def __init__(
@@ -605,6 +660,15 @@ class CSGCoordinator(DataUpdateCoordinator):
                 "Updated yesterday's kwh for account %s: %s",
                 account.account_number,
                 result,
+            )
+        elif success:
+            # The API responded but reported no reading for yesterday. This is
+            # normal for accounts whose meter is read in batches (e.g. TOU
+            # metering), so it is not an error.
+            yesterday_kwh = STATE_UNAVAILABLE
+            _LOGGER.debug(
+                "Yesterday's kwh for account %s is not available (no reading yet)",
+                account.account_number,
             )
         else:
             yesterday_kwh = STATE_UNAVAILABLE
@@ -1084,16 +1148,18 @@ class CSGCoordinator(DataUpdateCoordinator):
             self._history.async_delay_save(HISTORY_SAVE_DELAY)
 
     def _history_attributes(self, account_number: str) -> dict[str, Any]:
-        """Build the history related attributes for the history sensors."""
+        """Build the history related attributes for the history sensors.
+
+        The payload is kept compact: Home Assistant refuses to record state
+        attributes larger than 16 KB, which would drop the whole history from
+        the database. So the daily list only contains days that have a reading.
+        """
         history = self._history.get(account_number)
-        today = datetime.date.today()
         latest = history.latest_day()
         # `history.days` is keyed by "YYYY-MM-DD" strings, which sort correctly.
         oldest = min(history.days) if history.days else None
         return {
-            ATTR_KEY_DAILY_USAGE_HISTORY: history.daily_series(
-                today - timedelta(days=HISTORY_BACKFILL_MONTHS * 31), today
-            ),
+            ATTR_KEY_DAILY_USAGE_HISTORY: history.compact_daily_series(),
             ATTR_KEY_MONTHLY_USAGE_HISTORY: history.monthly_series(
                 months=HISTORY_ATTRIBUTE_MONTHS
             ),
@@ -1116,6 +1182,18 @@ class CSGCoordinator(DataUpdateCoordinator):
         account_data[SUFFIX_MONTHLY_USAGE_SUMMARY] = (
             monthly[-1]["kwh"] if monthly else STATE_UNAVAILABLE
         )
+
+        # Charges estimated from the hard-coded time-of-use rates. The CSG API
+        # does not return daily charges for time-of-use accounts, so these are
+        # computed locally and clearly labelled as estimates.
+        costs = history.estimated_costs(ESTIMATE_RATE)
+        account_data[SUFFIX_ESTIMATED_DAY_COST] = (
+            costs["day"] if costs["day"] is not None else STATE_UNAVAILABLE
+        )
+        account_data[SUFFIX_ESTIMATED_MONTH_COST] = (
+            costs["month"] if costs["month"] is not None else STATE_UNAVAILABLE
+        )
+
         attributes = self._history_attributes(account_number)
         # Stored under dedicated keys: reusing the SUFFIX_* keys here would
         # overwrite the numeric state, because both live in the same dict.

@@ -14,9 +14,11 @@
  *   title: 用电量                                            # optional
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.2.0";
 
 const MS_PER_DAY = 86400000;
+// 谷电价（元/度）。南网不提供分时电量，卡片按谷电价给一个偏低的估算值。
+const ESTIMATE_RATE = 0.233;
 const WEEK_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
 /** Format a Date as YYYY-MM-DD in local time. */
@@ -170,7 +172,15 @@ class CsgUsageCalendarCard extends HTMLElement {
 
 		const byDate = new Map();
 		for (const row of daily) {
-			if (row && row.date) byDate.set(row.date, row);
+			// Rows are [date, kwh] or [date, kwh, cost] to stay under Home
+			// Assistant's attribute size limit; accept the older dict form too.
+			let rec = null;
+			if (Array.isArray(row)) {
+				rec = { date: row[0], kwh: row[1], cost: row[2] };
+			} else if (row && row.date) {
+				rec = { date: row.date, kwh: row.kwh, cost: row.cost };
+			}
+			if (rec && rec.date) byDate.set(rec.date, rec);
 		}
 
 		const values = [];
@@ -237,6 +247,10 @@ class CsgUsageCalendarCard extends HTMLElement {
 					<span>日均 <b>${
 						dataDays ? fmt(monthTotal / dataDays) : "--"
 					}</b> kWh</span>
+					<span title="按谷电价 ${ESTIMATE_RATE} 元/度估算，非账单金额">
+						预计 <b>${fmt(monthTotal * ESTIMATE_RATE)}</b> 元
+						<small class="est-tag">估</small>
+					</span>
 				</div>
 				<div class="grid weekdays">
 					${WEEK_LABELS.map((w) => `<div class="wd">${w}</div>`).join("")}
@@ -348,6 +362,12 @@ class CsgUsageCalendarCard extends HTMLElement {
 				flex-wrap: wrap;
 			}
 			.stats b { color: var(--primary-text-color); }
+			.est-tag {
+				display: inline-block; margin-left: 2px; padding: 0 3px;
+				border-radius: 3px; font-size: 0.85em; line-height: 1.4;
+				background: var(--secondary-background-color);
+				color: var(--secondary-text-color);
+			}
 			.grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
 			.weekdays { margin-bottom: 4px; }
 			.wd {
