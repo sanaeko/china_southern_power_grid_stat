@@ -172,6 +172,29 @@ entity_id 使用英文，避免中文名被转成拼音（如 `sensor.yu_e`）�
 
 电价在 `const.py` 的 `TOU_RATES` / `TOU_PERIODS` 中定义，调价时改这里即可。
 
+### 集成图标（品牌资源）
+
+集成自带了品牌图标，放在 `custom_components/china_southern_power_grid_stat/brand/`，
+Home Assistant 会**优先读取本地文件**（早于官方 brands CDN），因此在
+「设置 → 设备与服务」的集成列表里可以直接看到图标，无需联网、也不依赖官方
+素材库是否收录。
+
+| 文件 | 用途 |
+| --- | --- |
+| `icon.png` / `icon@2x.png` | 方形图标（256 / 512） |
+| `logo.png` / `logo@2x.png` | 横向 logo（512×170 / 1024×341） |
+| `dark_icon*.png` / `dark_logo*.png` | 深色主题变体 |
+
+这些图片由 `scripts/make_brand_assets.py` 用代码绘制生成（内置配色 + 闪电图形），
+不依赖任何需要授权的第三方素材。想换配色或形状，改脚本后重新运行即可：
+
+```bash
+python scripts/make_brand_assets.py
+```
+
+> 如果图标仍未显示：HA 对品牌图片有缓存，请**重启 Home Assistant**（或等缓存过期）
+> 后刷新浏览器。
+
 ### 已知限制：哪些传感器“未知/为 0”是正常的
 
 南网接口对不同电表类型的支持程度不同。以下情况**不是 bug**：
