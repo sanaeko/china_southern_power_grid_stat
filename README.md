@@ -78,17 +78,25 @@
 
 ```yaml
 type: custom:csg-usage-calendar-card
-# 可选：指定历史传感器，留空则自动查找
-# entity: sensor.xxx_0307150390150952_daily_usage_history
-# 可选：显示内容 calendar / monthly / yearly / all（默认 all）
+# 全部可选，一般留空即可自动查找
+# entity: sensor.<你的历史传感器>   # 指定实体；无效时会自动回退查找
+# account: "0307150390150952"      # 多个电表时用它筛选
+# 显示内容 calendar / monthly / yearly / all（默认 all）
 view: all
 title: 用电量日历
 ```
 
+> **卡片不依赖实体 ID。** 它是按传感器上的 `daily_usage_history` /
+> `monthly_usage_history` 属性来识别的，所以实体被重命名（例如设备名从
+> 缴费号改成户名+地址）也不会失效。
+>
+> 如果卡片报「实体不存在」，说明配置里写死的 `entity:` 已经过期——
+> **把那一行删掉**让卡片自动查找即可，或者改成当前的实际实体 ID。
+
 卡片功能：
 
 - 月度日历网格，颜色深浅代表用电量高低，可左右切换月份
-- 显示当月合计、有数据天数、日均用电
+- 显示当月合计、有数据天数、日均用电、按谷电价估算的电费
 - 月度趋势条形图（最近 12 个月）
 - 年度对比（每年总电量/电费）
 
@@ -116,31 +124,42 @@ title: 用电量日历
 
 entity_id 使用英文，避免中文名被转成拼音（如 `sensor.yu_e`）：
 
-| entity_id | 显示名 |
+| 实体短名（entity_id 后缀） | 显示名 |
 | --- | --- |
-| `sensor.balance` | 余额 |
-| `sensor.arrears` | 欠费 |
-| `sensor.yesterday_usage` | 昨日用电量 |
-| `sensor.latest_usage` | 最近用电量 |
-| `sensor.latest_cost` | 最近电费 |
-| `sensor.month_usage` | 本月用电量 |
-| `sensor.month_cost` | 本月电费 |
-| `sensor.year_usage` | 今年用电量 |
-| `sensor.year_cost` | 今年电费 |
-| `sensor.last_month_usage` | 上月用电量 |
-| `sensor.last_month_cost` | 上月电费 |
-| `sensor.last_year_usage` | 去年用电量 |
-| `sensor.last_year_cost` | 去年电费 |
-| `sensor.ladder_stage` | 当前阶梯 |
-| `sensor.ladder_remaining` | 阶梯剩余电量 |
-| `sensor.ladder_tariff` | 当前阶梯电价 |
-| `sensor.usage_history` | 用电日历数据 |
-| `sensor.usage_trend` | 月度用电趋势 |
-| `calendar.usage_calendar` | 用电日历 |
+| `balance` | 余额 |
+| `arrears` | 欠费 |
+| `yesterday_usage` | 昨日用电量 |
+| `latest_usage` | 最近用电量 |
+| `latest_cost` | 最近电费 |
+| `month_usage` | 本月用电量 |
+| `month_cost` | 本月电费 |
+| `year_usage` | 今年用电量 |
+| `year_cost` | 今年电费 |
+| `last_month_usage` | 上月用电量 |
+| `last_month_cost` | 上月电费 |
+| `last_year_usage` | 去年用电量 |
+| `last_year_cost` | 去年电费 |
+| `ladder_stage` | 当前阶梯 |
+| `ladder_remaining` | 阶梯剩余电量 |
+| `ladder_tariff` | 当前阶梯电价 |
+| `usage_history` | 用电日历数据 |
+| `usage_trend` | 月度用电趋势 |
+| `estimated_day_cost` | 预计电费(日) |
+| `estimated_month_cost` | 预计电费(月) |
+
+`entity_id` 的实际形式是 **`sensor.<设备名拼音>_<短名>`**，例如：
+
+```
+sensor.zhao_san_xing_fu_xiao_qu_3dong_501_balance
+```
+
+因为设备名带上了户名和地址，`entity_id` 会较长——这是启用
+"设备名 + 实体短名" 显示方式的必然结果。卡片不依赖 `entity_id`，
+所以实体被重命名不会影响卡片。
 
 > **注意：已有实体不会自动改名。**
 > Home Assistant 的实体注册表以 `unique_id` 为准，已存在的实体保留其原有
-> `entity_id`。想要得到上表中的干净 ID，需要：
+> `entity_id`。想要按新规则重新生成，需要：
 > 1. 在「设置 → 设备与服务」中**删除**本集成
 > 2. **重新添加**并重新扫码登录、选择缴费号
 >

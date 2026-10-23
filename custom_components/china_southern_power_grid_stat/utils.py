@@ -41,8 +41,12 @@ def account_display_name(account_data: dict[str, Any] | None) -> str:
         return account_number or "南方电网"
 
     if account_number and account_number not in name:
-        # Keep the account number visible so multiple accounts stay distinct.
-        name = f"{name} {account_number}"
+        # Only append the account number when it fits whole. Truncating in the
+        # middle of it produced names like "...030715039…" which look broken and
+        # leak a meaningless prefix into the entity_id.
+        with_number = f"{name} {account_number}"
+        if len(with_number) <= MAX_DEVICE_NAME_LEN:
+            name = with_number
 
     if len(name) > MAX_DEVICE_NAME_LEN:
         name = name[: MAX_DEVICE_NAME_LEN - 1] + "…"

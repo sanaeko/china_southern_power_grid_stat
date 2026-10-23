@@ -153,7 +153,7 @@ ESTIMATE_RATE = TOU_RATES["valley"]
 # frontend card
 URL_BASE = "/china_southern_power_grid_stat"
 CARD_FILENAME = "china-southern-power-grid-usage-card.js"
-CARD_VERSION = "1.2.0"
+CARD_VERSION = "1.3.0"
 CARD_URL = f"{URL_BASE}/{CARD_FILENAME}?v={CARD_VERSION}"
 
 # entity naming

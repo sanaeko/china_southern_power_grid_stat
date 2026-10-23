@@ -97,6 +97,30 @@ def test_long_names_are_truncated():
     assert name.endswith("…")
 
 
+def test_account_number_is_never_split():
+    """Regression: a long address used to cut the number to "030715039…".
+
+    That half number looked broken and leaked a meaningless fragment into the
+    entity_id, so the number is now dropped entirely when it does not fit.
+    """
+    account = {
+        "account_number": "0307150390150952",
+        "user_name": "欧阳锦强",
+        "address": "广东省江门市蓬江区奇山里17号-2（自用充电桩）",
+    }
+    name = account_display_name(account)
+    assert len(name) <= utils.MAX_DEVICE_NAME_LEN
+    assert not name.endswith("…"), name
+    # Either the whole number is there, or none of it.
+    assert "0307150390150952" in name or "030715039" not in name
+    assert name == "欧阳锦强 广东省江门市蓬江区奇山里17号-2（自用充电桩）"
+
+
+def test_account_number_kept_when_it_fits():
+    account = {"account_number": "123", "user_name": "张三", "address": "某小区"}
+    assert account_display_name(account).endswith("123")
+
+
 def test_entity_names_are_short_and_unique():
     """Every suffix maps to a distinct, human friendly Chinese name."""
     assert len(CHINESE_NAMES) == 20

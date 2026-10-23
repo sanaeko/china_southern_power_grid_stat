@@ -14,7 +14,7 @@
  *   title: 用电量                                            # optional
  */
 
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 
 const MS_PER_DAY = 86400000;
 // 谷电价（元/度）。南网不提供分时电量，卡片按谷电价给一个偏低的估算值。
@@ -70,12 +70,8 @@ class CsgUsageCalendarCard extends HTMLElement {
 		}
 		this._config = { ...config };
 		this._view = config.view || "all";
-		if (
-			!this._config.entity &&
-			this._config.account
-		) {
-			this._config.entity = `sensor.csgaccount_${this._config.account}_${this._config.account}_daily_usage_history`;
-		}
+		// `account` used to be turned into a guessed entity_id. That id scheme
+		// no longer exists, so it now only narrows the automatic discovery.
 	}
 
 	set hass(hass) {
@@ -93,16 +89,57 @@ class CsgUsageCalendarCard extends HTMLElement {
 	}
 
 	/** Locate the history sensor for the configured account. */
+	/**
+	 * Locate the history sensors.
+	 *
+	 * Discovery deliberately keys off the *attributes* the integration
+	 * publishes, not the entity_id. The entity_id is derived from the device
+	 * name (holder + address) and therefore changes whenever the device is
+	 * renamed, which used to leave the card pointing at a dead id.
+	 */
 	_findEntities() {
 		if (!this._hass) return [];
-		const ids = Object.keys(this._hass.states);
+		const states = this._hass.states;
+
+		const carriesHistory = (eid) => {
+			const attrs = states[eid]?.attributes;
+			return !!(
+				attrs &&
+				("daily_usage_history" in attrs || "monthly_usage_history" in attrs)
+			);
+		};
+
+		// Honour an explicit entity only while it is actually present.
+		if (this._config.entity && states[this._config.entity]) {
+			return [this._config.entity];
+		}
+
+		const discovered = Object.keys(states).filter(carriesHistory);
+		if (discovered.length) {
+			// `account` narrows the result when several meters are configured.
+			// The device name may truncate the account number, so a shortened
+			// fingerprint is accepted too.
+			const account = String(this._config.account || "").trim();
+			if (account) {
+				const fingerprint = account.slice(0, 9);
+				const byAccount = discovered.filter(
+					(eid) =>
+						eid.includes(account) ||
+						(fingerprint.length >= 6 && eid.includes(fingerprint))
+				);
+				if (byAccount.length) return byAccount.sort();
+			}
+			return discovered.sort();
+		}
+
+		// Last resort: the historical id pattern, before the attribute names
+		// were settled. Keeps very old cards working.
 		if (this._config.entity) {
 			return [this._config.entity];
 		}
-		return ids.filter(
+		return Object.keys(states).filter(
 			(eid) =>
-				eid.startsWith("sensor.csgaccount") &&
-				eid.endsWith("daily_usage_history")
+				eid.startsWith("sensor.csgaccount") && eid.endsWith("daily_usage_history")
 		);
 	}
 
@@ -115,8 +152,12 @@ class CsgUsageCalendarCard extends HTMLElement {
 	_render() {
 		const entityId = this._findEntities()[0];
 		if (!entityId) {
+			const stale = this._config.entity
+				? `<br><small>配置中的 entity <code>${this._config.entity}</code> 已不存在，` +
+				  `可在卡片配置里清空该项让卡片自动查找。</small>`
+				: "";
 			this._renderError(
-				"未找到用电历史传感器。请确认已添加南网集成，或设置 entity 配置项。"
+				`未找到用电历史传感器，请确认南网集成已加载。${stale}`
 			);
 			return;
 		}
