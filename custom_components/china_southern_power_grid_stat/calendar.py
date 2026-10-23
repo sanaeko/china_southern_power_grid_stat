@@ -19,7 +19,13 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_ELE_ACCOUNTS, DOMAIN
+from .const import (
+    CALENDAR_ENTITY_NAME,
+    CALENDAR_OBJECT_ID,
+    CONF_ELE_ACCOUNTS,
+    DOMAIN,
+)
+from .utils import account_display_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,14 +63,22 @@ class CSGDailyUsageCalendar(CoordinatorEntity, CalendarEntity):
         super().__init__(coordinator)
         self._account_number = account_number
         self._attr_unique_id = f"{DOMAIN}.{account_number}.usage_calendar"
-        self._attr_name = f"{account_number}-usage_calendar"
+        self._attr_has_entity_name = True
+        self._attr_name = CALENDAR_ENTITY_NAME
+
+    @property
+    def suggested_object_id(self) -> str | None:
+        """Return the ASCII object id used to generate the entity_id."""
+        return CALENDAR_OBJECT_ID
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._account_number)},
-            name=f"CSGAccount-{self._account_number}",
+            name=account_display_name(
+                self.coordinator.account_config(self._account_number)
+            ),
             manufacturer="CSG",
             model="CSG Virtual Electricity Meter",
         )

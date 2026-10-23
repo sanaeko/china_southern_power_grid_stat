@@ -14,7 +14,7 @@
  *   title: 用电量                                            # optional
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 const MS_PER_DAY = 86400000;
 const WEEK_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
@@ -193,6 +193,9 @@ class CsgUsageCalendarCard extends HTMLElement {
 			const key = toKey(new Date(year, month, day));
 			const row = byDate.get(key);
 			const hasData = row && row.kwh !== null && row.kwh !== undefined;
+			// The CSG API reports many days as exactly 0 kWh (usage is billed in
+			// batches). Distinguish "read 0" from "no reading at all".
+			const isZero = hasData && Number(row.kwh) === 0;
 			const isToday = key === toKey(now);
 			if (hasData) {
 				monthTotal += row.kwh;
@@ -201,20 +204,21 @@ class CsgUsageCalendarCard extends HTMLElement {
 			const intensity =
 				hasData && maxValue > 0 ? Math.max(0.12, row.kwh / maxValue) : 0;
 			const bg = hasData
-				? `background: rgba(3, 155, 229, ${intensity.toFixed(3)});`
+				? isZero
+					? ""
+					: `background: rgba(3, 155, 229, ${intensity.toFixed(3)});`
 				: "";
 			const title = hasData
 				? `${key}　用电 ${fmt(row.kwh)} kWh${
 						row.cost !== null && row.cost !== undefined
 							? `　电费 ${fmt(row.cost)} 元`
 							: ""
-				  }`
+				  }${isZero ? "（当日无用电）" : ""}`
 				: `${key}　无数据`;
-			cells += `<div class="day${isToday ? " today" : ""}${
-				hasData ? "" : " nodata"
-			}" style="${bg}" title="${title}">
+			const stateClass = isZero ? " zero" : hasData ? "" : " nodata";
+			cells += `<div class="day${isToday ? " today" : ""}${stateClass}" style="${bg}" title="${title}">
 				<span class="dnum">${day}</span>
-				<span class="dval">${hasData ? fmt(row.kwh, 1) : ""}</span>
+				<span class="dval">${hasData ? (isZero ? "0" : fmt(row.kwh, 1)) : ""}</span>
 			</div>`;
 		}
 
@@ -358,6 +362,8 @@ class CsgUsageCalendarCard extends HTMLElement {
 			}
 			.day.empty { background: transparent; }
 			.day.nodata { opacity: 0.55; }
+			.day.zero { color: var(--secondary-text-color); }
+			.day.zero .dval { opacity: 0.7; }
 			.day.today { outline: 2px solid var(--primary-color); }
 			.dnum { font-size: 0.8em; line-height: 1; }
 			.dval { font-size: 0.68em; opacity: 0.9; margin-top: 2px; }

@@ -97,8 +97,53 @@ title: 用电量日历
 
 ### 作为能源仪表盘数据源
 
-`daily_usage_history` 与 `monthly_usage_summary` 是 `measurement`
+`usage_history` 与 `usage_trend` 是 `measurement`
 类型的电量传感器，可用于能源仪表盘展示每日/每月用电趋势。
+
+### 实体命名（v1.5.0 起）
+
+设备与实体名称改为使用**户名和地址**，不再堆叠缴费号：
+
+| 项目 | 旧 | 新 |
+| --- | --- | --- |
+| 设备名 | `CSGAccount-0307150390150952` | `张三 幸福小区3栋501 0307150390150952` |
+| 实体显示名 | `CSGAccount-... 0307150390150952-balance` | `张三 幸福小区3栋501 余额` |
+| entity_id | `sensor.csgaccount_0307150390150952_..._balance` | `sensor.balance` |
+
+entity_id 使用英文，避免中文名被转成拼音（如 `sensor.yu_e`）：
+
+| entity_id | 显示名 |
+| --- | --- |
+| `sensor.balance` | 余额 |
+| `sensor.arrears` | 欠费 |
+| `sensor.yesterday_usage` | 昨日用电量 |
+| `sensor.latest_usage` | 最近用电量 |
+| `sensor.latest_cost` | 最近电费 |
+| `sensor.month_usage` | 本月用电量 |
+| `sensor.month_cost` | 本月电费 |
+| `sensor.year_usage` | 今年用电量 |
+| `sensor.year_cost` | 今年电费 |
+| `sensor.last_month_usage` | 上月用电量 |
+| `sensor.last_month_cost` | 上月电费 |
+| `sensor.last_year_usage` | 去年用电量 |
+| `sensor.last_year_cost` | 去年电费 |
+| `sensor.ladder_stage` | 当前阶梯 |
+| `sensor.ladder_remaining` | 阶梯剩余电量 |
+| `sensor.ladder_tariff` | 当前阶梯电价 |
+| `sensor.usage_history` | 用电日历数据 |
+| `sensor.usage_trend` | 月度用电趋势 |
+| `calendar.usage_calendar` | 用电日历 |
+
+> **注意：已有实体不会自动改名。**
+> Home Assistant 的实体注册表以 `unique_id` 为准，已存在的实体保留其原有
+> `entity_id`。想要得到上表中的干净 ID，需要：
+> 1. 在「设置 → 设备与服务」中**删除**本集成
+> 2. **重新添加**并重新扫码登录、选择缴费号
+>
+> 删除不会清空已保存的用电历史（历史存在
+> `.storage/china_southern_power_grid_stat_GDJM.usage_history`，按缴费号保存，
+> 重新添加后会继续使用）。如果你希望保留现有 `entity_id` 不动，只改显示名，
+> 可以只删除实体注册表里的旧实体后再重载集成。
 
 ❌**不支持**阶梯电费设置（仅能获取当前所在阶梯）、峰谷电价设置和电费计算（本插件只进行数据抓取和转换，不进行任何计算），
 暂时也没有支持计划（南网暂时没有统一的API），如有需求，建议单独创建对应的电价实体。

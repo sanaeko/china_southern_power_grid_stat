@@ -79,6 +79,10 @@ ATTR_KEY_LAST_YEAR_BY_MONTH = "last_year_by_month"
 ATTR_KEY_LATEST_DAY_DATE = "latest_day_date"
 ATTR_KEY_CURRENT_LADDER_START_DATE = "current_ladder_start_date"
 # history attributes
+# NOTE: the ATTR_KEY_* names below are the public attribute names shown by
+# Home Assistant. They live in the entity's `extra_state_attributes` dict,
+# which is a different dict from the coordinator data, so reusing a SUFFIX_*
+# value here is intentional and safe.
 ATTR_KEY_DAILY_USAGE_HISTORY = "daily_usage_history"
 ATTR_KEY_MONTHLY_USAGE_HISTORY = "monthly_usage_history"
 ATTR_KEY_YEARLY_USAGE_HISTORY = "yearly_usage_history"
@@ -86,6 +90,13 @@ ATTR_KEY_HISTORY_START = "history_start"
 ATTR_KEY_HISTORY_END = "history_end"
 ATTR_KEY_HISTORY_DAYS = "history_days"
 ATTR_KEY_HISTORY_BACKFILL_COMPLETE = "history_backfill_complete"
+
+# Coordinator keys holding the attribute *payload* for the history sensors.
+# These must be distinct from the SUFFIX_* keys: both live in the same
+# per-account coordinator dict, so a shared name would overwrite the sensor's
+# numeric state with the attribute dict.
+COORD_KEY_DAILY_HISTORY_ATTRS = "daily_usage_history_attrs"
+COORD_KEY_MONTHLY_HISTORY_ATTRS = "monthly_usage_summary_attrs"
 
 STATE_UPDATE_UNCHANGED = "unchanged"
 DATA_KEY_LAST_UPDATE_DAY = "last_update_day"
@@ -106,8 +117,57 @@ HISTORY_SAVE_DELAY = 10
 # frontend card
 URL_BASE = "/china_southern_power_grid_stat"
 CARD_FILENAME = "china-southern-power-grid-usage-card.js"
-CARD_VERSION = "1.0.0"
+CARD_VERSION = "1.1.0"
 CARD_URL = f"{URL_BASE}/{CARD_FILENAME}?v={CARD_VERSION}"
+
+# entity naming
+# Human friendly names shown in the UI, prefixed with the device name
+# (e.g. "张三 幸福小区3栋501 余额").
+SUFFIX_TO_ENTITY_NAME: dict[str, str] = {
+    SUFFIX_BAL: "余额",
+    SUFFIX_ARR: "欠费",
+    SUFFIX_YESTERDAY_KWH: "昨日用电量",
+    SUFFIX_LATEST_DAY_KWH: "最近用电量",
+    SUFFIX_LATEST_DAY_COST: "最近电费",
+    SUFFIX_THIS_YEAR_KWH: "今年用电量",
+    SUFFIX_THIS_YEAR_COST: "今年电费",
+    SUFFIX_THIS_MONTH_KWH: "本月用电量",
+    SUFFIX_THIS_MONTH_COST: "本月电费",
+    SUFFIX_CURRENT_LADDER: "当前阶梯",
+    SUFFIX_CURRENT_LADDER_REMAINING_KWH: "阶梯剩余电量",
+    SUFFIX_CURRENT_LADDER_TARIFF: "当前阶梯电价",
+    SUFFIX_LAST_YEAR_KWH: "去年用电量",
+    SUFFIX_LAST_YEAR_COST: "去年电费",
+    SUFFIX_LAST_MONTH_KWH: "上月用电量",
+    SUFFIX_LAST_MONTH_COST: "上月电费",
+    SUFFIX_DAILY_USAGE_HISTORY: "用电日历数据",
+    SUFFIX_MONTHLY_USAGE_SUMMARY: "月度用电趋势",
+}
+
+# English object ids keep entity_ids ASCII and scriptable (sensor.balance)
+# instead of the pinyin that a Chinese name would slugify to (sensor.yu_e).
+SUFFIX_TO_OBJECT_ID: dict[str, str] = {
+    SUFFIX_BAL: "balance",
+    SUFFIX_ARR: "arrears",
+    SUFFIX_YESTERDAY_KWH: "yesterday_usage",
+    SUFFIX_LATEST_DAY_KWH: "latest_usage",
+    SUFFIX_LATEST_DAY_COST: "latest_cost",
+    SUFFIX_THIS_YEAR_KWH: "year_usage",
+    SUFFIX_THIS_YEAR_COST: "year_cost",
+    SUFFIX_THIS_MONTH_KWH: "month_usage",
+    SUFFIX_THIS_MONTH_COST: "month_cost",
+    SUFFIX_CURRENT_LADDER: "ladder_stage",
+    SUFFIX_CURRENT_LADDER_REMAINING_KWH: "ladder_remaining",
+    SUFFIX_CURRENT_LADDER_TARIFF: "ladder_tariff",
+    SUFFIX_LAST_YEAR_KWH: "last_year_usage",
+    SUFFIX_LAST_YEAR_COST: "last_year_cost",
+    SUFFIX_LAST_MONTH_KWH: "last_month_usage",
+    SUFFIX_LAST_MONTH_COST: "last_month_cost",
+    SUFFIX_DAILY_USAGE_HISTORY: "usage_history",
+    SUFFIX_MONTHLY_USAGE_SUMMARY: "usage_trend",
+}
+CALENDAR_ENTITY_NAME = "用电日历"
+CALENDAR_OBJECT_ID = "usage_calendar"
 
 # settings
 

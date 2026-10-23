@@ -257,3 +257,31 @@ async def test_history_store_handles_empty_storage():
     await store.async_load()
     assert store.accounts == {}
     assert store.get("new").days == {}
+
+
+def _window_is_current(history, today, max_age_days=40):
+    """Mirror of CSGCoordinator._history_window_is_current."""
+    latest = history.latest_day()
+    if latest is None:
+        return False
+    latest_date = parse_date(latest[0])
+    if latest_date is None:
+        return False
+    return (today - latest_date).days <= max_age_days
+
+
+def test_window_is_current_for_fresh_data():
+    h = AccountHistory()
+    h.merge_days([(d("2026-10-21"), 5.0, None)])
+    assert _window_is_current(h, d("2026-10-23")) is True
+
+
+def test_window_is_stale_after_a_long_gap():
+    """A long offline period must trigger a re-fetch instead of silently skipping."""
+    h = AccountHistory()
+    h.merge_days([(d("2026-08-01"), 5.0, None)])
+    assert _window_is_current(h, d("2026-10-23")) is False
+
+
+def test_window_is_stale_for_empty_history():
+    assert _window_is_current(AccountHistory(), d("2026-10-23")) is False

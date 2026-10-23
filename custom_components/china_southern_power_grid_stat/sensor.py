@@ -47,6 +47,8 @@ from .const import (
     CONF_ELE_ACCOUNTS,
     CONF_SETTINGS,
     CONF_UPDATE_INTERVAL,
+    COORD_KEY_DAILY_HISTORY_ATTRS,
+    COORD_KEY_MONTHLY_HISTORY_ATTRS,
     DATA_KEY_LAST_UPDATE_DAY,
     DOMAIN,
     HISTORY_ATTRIBUTE_MONTHS,
@@ -76,6 +78,8 @@ from .const import (
     SUFFIX_THIS_MONTH_KWH,
     SUFFIX_THIS_YEAR_COST,
     SUFFIX_THIS_YEAR_KWH,
+    SUFFIX_TO_ENTITY_NAME,
+    SUFFIX_TO_OBJECT_ID,
     SUFFIX_YESTERDAY_KWH,
 )
 from .csg_client import (
@@ -92,7 +96,8 @@ from .csg_client import (
     CSGElectricityAccount,
     NotLoggedIn,
 )
-from .history import HistoryStore, parse_date
+from .history import AccountHistory, HistoryStore, parse_date
+from .utils import account_display_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -302,13 +307,25 @@ class CSGBaseSensor(
         self._attr_extra_state_attributes = {}
         self._extra_state_attributes_key = extra_state_attributes_key
 
+        # Use the modern naming scheme: the entity carries only its own short
+        # name ("余额"), and Home Assistant prefixes the device name (e.g.
+        # "张三 幸福小区3栋501 余额") for display.
+        self._attr_has_entity_name = True
+        self._attr_name = SUFFIX_TO_ENTITY_NAME.get(entity_suffix, entity_suffix)
+        # Keep entity_ids ASCII and readable (sensor.balance) rather than
+        # letting the Chinese name slugify into pinyin (sensor.yu_e).
+        self._suggested_object_id = SUFFIX_TO_OBJECT_ID.get(
+            entity_suffix, entity_suffix
+        )
+
+    @property
+    def suggested_object_id(self) -> str | None:
+        """Return the ASCII object id used to generate the entity_id."""
+        return self._suggested_object_id
+
     @property
     def unique_id(self) -> str | None:
         return f"{DOMAIN}.{self._account_number}.{self._entity_suffix}"
-
-    @property
-    def name(self) -> str | None:
-        return f"{self._account_number}-{self._entity_suffix}"
 
     @property
     def should_poll(self) -> bool:
@@ -319,7 +336,9 @@ class CSGBaseSensor(
         """Return the device info."""
         return DeviceInfo(
             identifiers={(DOMAIN, self._account_number)},
-            name=f"CSGAccount-{self._account_number}",
+            name=account_display_name(
+                self._coordinator.account_config(self._account_number)
+            ),
             manufacturer="CSG",
             model="CSG Virtual Electricity Meter",
         )
@@ -436,7 +455,7 @@ class CSGDailyUsageHistorySensor(CSGBaseSensor):
             coordinator,
             account_number,
             SUFFIX_DAILY_USAGE_HISTORY,
-            extra_state_attributes_key=ATTR_KEY_DAILY_USAGE_HISTORY,
+            extra_state_attributes_key=COORD_KEY_DAILY_HISTORY_ATTRS,
         )
 
 
@@ -457,7 +476,7 @@ class CSGMonthlySummarySensor(CSGBaseSensor):
             coordinator,
             account_number,
             SUFFIX_MONTHLY_USAGE_SUMMARY,
-            extra_state_attributes_key=ATTR_KEY_MONTHLY_USAGE_HISTORY,
+            extra_state_attributes_key=COORD_KEY_MONTHLY_HISTORY_ATTRS,
         )
 
 
@@ -998,6 +1017,13 @@ class CSGCoordinator(DataUpdateCoordinator):
         await self._history.async_load()
         self._history_loaded = True
 
+    def account_config(self, account_number: str) -> dict[str, Any] | None:
+        """Return the stored configuration for one electricity account.
+
+        Used to build the device name from the account holder's name/address.
+        """
+        return self._config.get(CONF_ELE_ACCOUNTS, {}).get(account_number)
+
     @staticmethod
     def _attribute_payload(account_data: dict[str, Any], key: str) -> Any:
         """Unwrap an attribute dict, returning the list inside or ``None``.
@@ -1062,6 +1088,7 @@ class CSGCoordinator(DataUpdateCoordinator):
         history = self._history.get(account_number)
         today = datetime.date.today()
         latest = history.latest_day()
+        # `history.days` is keyed by "YYYY-MM-DD" strings, which sort correctly.
         oldest = min(history.days) if history.days else None
         return {
             ATTR_KEY_DAILY_USAGE_HISTORY: history.daily_series(
@@ -1071,7 +1098,7 @@ class CSGCoordinator(DataUpdateCoordinator):
                 months=HISTORY_ATTRIBUTE_MONTHS
             ),
             ATTR_KEY_YEARLY_USAGE_HISTORY: history.yearly_series(),
-            ATTR_KEY_HISTORY_START: oldest.isoformat() if oldest else None,
+            ATTR_KEY_HISTORY_START: oldest,
             ATTR_KEY_HISTORY_END: latest[0] if latest else None,
             ATTR_KEY_HISTORY_DAYS: len(history.days),
             ATTR_KEY_HISTORY_BACKFILL_COMPLETE: history.backfilled,
@@ -1090,8 +1117,27 @@ class CSGCoordinator(DataUpdateCoordinator):
             monthly[-1]["kwh"] if monthly else STATE_UNAVAILABLE
         )
         attributes = self._history_attributes(account_number)
-        account_data[ATTR_KEY_DAILY_USAGE_HISTORY] = attributes
-        account_data[ATTR_KEY_MONTHLY_USAGE_HISTORY] = attributes
+        # Stored under dedicated keys: reusing the SUFFIX_* keys here would
+        # overwrite the numeric state, because both live in the same dict.
+        account_data[COORD_KEY_DAILY_HISTORY_ATTRS] = attributes
+        account_data[COORD_KEY_MONTHLY_HISTORY_ATTRS] = attributes
+
+    @staticmethod
+    def _history_window_is_current(history: AccountHistory, today: datetime.date) -> bool:
+        """Whether the stored history already spans the desired window.
+
+        Returns ``False`` when the newest record is more than ~40 days old, which
+        happens when the integration was offline for a while, after the account
+        data was removed, or on a fresh install that restored an old file. In
+        those cases the back-fill runs again to close the gap.
+        """
+        latest = history.latest_day()
+        if latest is None:
+            return False
+        latest_date = parse_date(latest[0])
+        if latest_date is None:
+            return False
+        return (today - latest_date).days <= 40
 
     async def _async_backfill_history(self, account: CSGElectricityAccount) -> None:
         """Fetch daily usage for the last N months to seed the history.
@@ -1101,12 +1147,16 @@ class CSGCoordinator(DataUpdateCoordinator):
         gracefully when the config entry is unloaded.
         """
         history = self._history.get(account.account_number)
-        if history.backfilled:
-            return
         today = datetime.date.today()
         this_month = today.replace(day=1)
 
+        if history.backfilled and self._history_window_is_current(history, today):
+            # Already back-filled recently: the regular updates keep the current
+            # and previous month fresh, so no full re-fetch is needed.
+            return
+
         fetched = 0
+        attempts = 0
         for month in backfill_months(today, HISTORY_BACKFILL_MONTHS):
             month_prefix = month.strftime("%Y-%m")
             covered = sum(
@@ -1118,6 +1168,7 @@ class CSGCoordinator(DataUpdateCoordinator):
             if covered >= _month_length(month) and month != this_month:
                 continue
 
+            attempts += 1
             try:
                 success, result = await self._async_fetch(
                     self._client.get_month_daily_usage_detail,
@@ -1145,9 +1196,58 @@ class CSGCoordinator(DataUpdateCoordinator):
 
             await asyncio.sleep(HISTORY_BACKFILL_INTERVAL)
 
+            # Daily charges come from a separate endpoint. It is slower and can
+            # fail independently, so it is best-effort and never blocks usage data.
+            try:
+                ok_cost, cost_result = await self._async_fetch(
+                    self._client.get_month_daily_cost_detail,
+                    account,
+                    (month.year, month.month),
+                )
+            except asyncio.CancelledError:
+                raise
+            if ok_cost and cost_result is not None:
+                _, _, _ladder, by_day_cost = cost_result
+                history.merge_days(
+                    [
+                        (
+                            parse_date(item.get(WF_ATTR_DATE)),
+                            None,
+                            item.get(WF_ATTR_CHARGE),
+                        )
+                        for item in by_day_cost
+                        if isinstance(item, dict)
+                        and parse_date(item.get(WF_ATTR_DATE)) is not None
+                    ]
+                )
+                # Keep the API's authoritative monthly charge total.
+                total_charge = sum(
+                    (item.get(WF_ATTR_CHARGE) or 0.0)
+                    for item in by_day_cost
+                    if isinstance(item, dict)
+                )
+                history.merge_month(month_prefix, cost_result[1], total_charge or None)
+                _LOGGER.debug(
+                    "Ele account %s: history back-fill costs for %s fetched",
+                    account.account_number,
+                    month_prefix,
+                )
+
+            await asyncio.sleep(HISTORY_BACKFILL_INTERVAL)
+
         history.rebuild_months(today)
         history.prune(today)
-        history.backfilled = True
+        # Only mark complete when at least one request actually succeeded.
+        # Otherwise a run where every request failed (expired session, network
+        # outage) would permanently disable the back-fill.
+        if fetched or not attempts:
+            history.backfilled = True
+        else:
+            _LOGGER.warning(
+                "Ele account %s: history back-fill fetched no data, will retry "
+                "on the next update",
+                account.account_number,
+            )
         history.updated = datetime.datetime.now().isoformat(timespec="seconds")
         await self._history.async_save()
 
@@ -1156,9 +1256,10 @@ class CSGCoordinator(DataUpdateCoordinator):
             self._update_history_sensors(account_number)
         self.async_update_listeners()
         _LOGGER.info(
-            "Ele account %s: history back-filled from %d months of data",
+            "Ele account %s: history back-filled from %d of %d months attempted",
             account.account_number,
             fetched,
+            attempts,
         )
 
     def _schedule_backfill(self, accounts: list[CSGElectricityAccount]) -> None:
